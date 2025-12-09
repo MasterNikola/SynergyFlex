@@ -7,6 +7,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px  # ✅ nécessaire pour show_economics
+from core.pv_module import (
+    compute_pv_monthly_energy_per_kw,
+    _get_param_val,
+)
 
 
 
@@ -24,14 +29,13 @@ def render_phase2():
 
     st.title("Phase 2 – Analyse et visualisation")
     st.markdown("## Vue d’ensemble du projet")
-    
-    
 
     page = st.sidebar.radio(
         "Sections",
         [
             "Vue d’ensemble",
             "Diagramme de Sankey",
+            "📊 Économie",          # ✅ virgule ajoutée ici
             "Comparaison standard",
             "Analyse conso / prod",
             "Variantes",
@@ -42,6 +46,8 @@ def render_phase2():
         show_overview(project)
     elif page == "Diagramme de Sankey":
         show_sankey(project)
+    elif page == "📊 Économie":
+        show_economics(project)
     elif page == "Comparaison standard":
         show_comparison(project)
     elif page == "Analyse conso / prod":
@@ -133,7 +139,6 @@ def show_overview(project: dict):
     if batiments:
         st.dataframe(pd.DataFrame(batiments), use_container_width=True)
     else:
-        # On affiche quand même un “pseudo-bâtiment”
         df_bat = pd.DataFrame(
             [
                 {
@@ -176,7 +181,7 @@ def show_overview(project: dict):
     fallback_df = None
     if not sheets_dict:
         fallback_df = _get_fallback_dataframe_from_project(project)
-
+        
     for idx, cat in enumerate(categories):
         type_ouv = cat.get("type", "Ouvrage")
         nom_ouv = cat.get("nom") or f"Ouvrage {idx+1}"
@@ -209,7 +214,6 @@ def show_overview(project: dict):
             if sheet_name and sheet_name in sheets_dict:
                 df_sheet = sheets_dict[sheet_name]
             else:
-                # fallback : première feuille du fichier
                 first_sheet_name = list(sheets_dict.keys())[0]
                 df_sheet = sheets_dict[first_sheet_name]
         elif fallback_df is not None:
@@ -222,7 +226,7 @@ def show_overview(project: dict):
 
         if not time_col or time_col not in df_sheet.columns:
             st.info("Colonne de temps non définie ou introuvable pour cet ouvrage.")
-            st.markdown("---")
+            st.markmarkdown("---")
             continue
 
         conso_elec_valid = conso_elec_col if conso_elec_col in df_sheet.columns else None
@@ -233,10 +237,9 @@ def show_overview(project: dict):
             st.markdown("---")
             continue
 
-        # ---------- Graphique area non empilé ----------
+        # ---------- Graphique area ----------
         x_raw = df_sheet[time_col]
-        
-        # 🔹 NEW : gestion propre du temps
+
         if time_col.lower().startswith("mois") and "Annee" in df_sheet.columns:
             x = pd.to_datetime(
                 df_sheet["Annee"].astype(int).astype(str) + "-" +
@@ -245,9 +248,9 @@ def show_overview(project: dict):
             )
         else:
             x = pd.to_datetime(x_raw, errors="ignore")
-        
+
         fig = go.Figure()
-        
+
         if conso_elec_valid:
             y = pd.to_numeric(df_sheet[conso_elec_valid], errors="coerce")
             fig.add_trace(
@@ -273,7 +276,7 @@ def show_overview(project: dict):
                     line=dict(width=1.5),
                 )
             )
-        
+
         fig.update_layout(
             height=320,
             margin=dict(l=40, r=20, t=10, b=40),
@@ -285,193 +288,15 @@ def show_overview(project: dict):
         st.plotly_chart(fig, use_container_width=True)
         st.markdown("---")
 
-def show_pv_sankey_from_df(df: pd.DataFrame, titre: str = "Diagramme de Sankey – Panneaux solaires"):
-    st.markdown(f"### {titre}")
-
-    if df is None or df.empty:
-        st.info("Aucune donnée disponible pour construire le Sankey PV.")
-        return
-
-    # On ne propose que les colonnes numériques
-    cols_num = df.select_dtypes(include=["number"]).columns.tolist()
-    if not cols_num:
-        st.info("Aucune colonne numérique trouvée dans les données.")
-        return
-
-    # --- Sélection des colonnes / hypothèses par l'utilisateur ---
-
-    col_pv_prod = st.selectbox(
-        "Colonne de production PV [kWh]",
-        options=cols_num,
-        key="pv_prod_col",
-    )
-
-    has_pv_auto = st.checkbox(
-        "J'ai une colonne pour l'autoconsommation PV",
-        value=any("auto" in c.lower() for c in cols_num),
-        key="has_pv_auto",
-    )
-    col_pv_auto = None
-    default_selfc = None
-    if has_pv_auto:
-        col_pv_auto = st.selectbox(
-            "Colonne PV autoconsommé [kWh]",
-            options=cols_num,
-            key="pv_auto_col",
-        )
-    else:
-        default_selfc = st.slider(
-            "Taux d'autoconsommation PV estimé [%]",
-            min_value=0,
-            max_value=100,
-            value=55,
-            step=1,
-            key="pv_selfc_ratio",
-        )
-
-    has_pv_inj = st.checkbox(
-        "J'ai une colonne pour l'injection PV sur le réseau",
-        value=any("inj" in c.lower() or "réseau" in c.lower() for c in cols_num),
-        key="has_pv_inj",
-    )
-    col_pv_inj = None
-    if has_pv_inj:
-        col_pv_inj = st.selectbox(
-            "Colonne PV injecté sur le réseau [kWh]",
-            options=cols_num,
-            key="pv_inj_col",
-        )
-
-    has_conso_elec = st.checkbox(
-        "J'ai une colonne pour la consommation électrique du bâtiment (hors PAC)",
-        value=any("conso" in c.lower() and "elec" in c.lower() for c in df.columns),
-        key="has_conso_elec",
-    )
-    col_conso_elec = None
-    if has_conso_elec:
-        col_conso_elec = st.selectbox(
-            "Colonne de consommation électrique [kWh]",
-            options=cols_num,
-            key="conso_elec_col",
-        )
-
-    has_import_reseau = st.checkbox(
-        "J'ai une colonne pour l'import réseau",
-        value=any("import" in c.lower() for c in df.columns),
-        key="has_import_reseau",
-    )
-    col_import_reseau = None
-    if has_import_reseau:
-        col_import_reseau = st.selectbox(
-            "Colonne d'import réseau [kWh]",
-            options=cols_num,
-            key="import_reseau_col",
-        )
-
-    if not col_pv_prod:
-        st.warning("Sélectionne au minimum une colonne de production PV.")
-        return
-
-    if st.button("Construire le Sankey PV", key="build_sankey_pv"):
-        # --- Agrégation des données ---
-        prod_pv = float(df[col_pv_prod].astype(float).sum())
-
-        if prod_pv <= 0:
-            st.warning("La production PV totale est nulle ou négative, impossible de construire le Sankey.")
-            return
-
-        # Autoconsommation
-        if col_pv_auto:
-            pv_auto = float(df[col_pv_auto].astype(float).sum())
-        else:
-            pv_auto = prod_pv * (default_selfc / 100.0)
-
-        # Injection
-        if col_pv_inj:
-            pv_inj = float(df[col_pv_inj].astype(float).sum())
-        else:
-            pv_inj = max(prod_pv - pv_auto, 0.0)
-
-        # Conso / Import réseau
-        conso_elec = float(df[col_conso_elec].astype(float).sum()) if col_conso_elec else 0.0
-
-        if col_import_reseau:
-            grid_to_uses = float(df[col_import_reseau].astype(float).sum())
-        else:
-            # Approximation : ce que la conso ne reçoit pas du PV autoconsommé
-            grid_to_uses = max(conso_elec - pv_auto, 0.0)
-
-        # --- Définition des nœuds et flux ---
-
-        labels = [
-            "PV",               # 0
-            "Usages élec.",     # 1
-            "Réseau",           # 2
-            "Injection réseau", # 3
-        ]
-
-        sources = []
-        targets = []
-        values = []
-
-        # PV -> Usages
-        if pv_auto > 0:
-            sources.append(0)
-            targets.append(1)
-            values.append(pv_auto)
-
-        # PV -> Injection
-        if pv_inj > 0:
-            sources.append(0)
-            targets.append(3)
-            values.append(pv_inj)
-
-        # Réseau -> Usages
-        if grid_to_uses > 0:
-            sources.append(2)
-            targets.append(1)
-            values.append(grid_to_uses)
-
-        if not values:
-            st.info("Les flux PV calculés sont nuls, Sankey non pertinent.")
-            return
-
-        fig = go.Figure(
-            data=[
-                go.Sankey(
-                    node=dict(
-                        pad=20,
-                        thickness=20,
-                        line=dict(width=0.5),
-                        label=labels,
-                    ),
-                    link=dict(
-                        source=sources,
-                        target=targets,
-                        value=values,
-                    ),
-                )
-            ]
-        )
-
-        fig.update_layout(
-            title_text="Flux électriques liés aux panneaux solaires",
-            font_size=12,
-            margin=dict(l=20, r=20, t=40, b=20),
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================================
-# AUTRES SECTIONS (placeholders)
+# SANKey helper
 # =====================================================================
 
 def _build_sankey_from_flow_block(block: dict):
     """
     Construit une figure Sankey Plotly à partir d'un flow_block standardisé.
     """
-    import plotly.graph_objects as go
-
     nodes = block.get("nodes", [])
     links = block.get("links", [])
 
@@ -482,12 +307,14 @@ def _build_sankey_from_flow_block(block: dict):
     id_to_index = {node["id"]: i for i, node in enumerate(nodes)}
     labels = [node.get("label", node["id"]) for node in nodes]
 
-    # --- palette de couleurs par groupe (type énergie) ---
     rgb_by_group = {
-        "prod_elec":  (255, 193,   7),   # jaune solaire
-        "use_elec":   ( 33, 150, 243),   # bleu usages
-        "reseau":     (244,  67,  54),   # rouge réseau
-        "stock_elec": (123,  31, 162),   # violet stockage (pour plus tard)
+        "prod_elec":  (255, 193,   7),
+        "use_elec":   ( 33, 150, 243),
+        "reseau":     (244,  67,  54),
+        "stock_elec": (123,  31, 162),
+        "prod_th":    (255, 112,  67),
+        "demande":    ( 76, 175,  80),
+        "final":      ( 96, 125, 139),
     }
     default_rgb = (158, 158, 158)
 
@@ -495,14 +322,47 @@ def _build_sankey_from_flow_block(block: dict):
         r, g, b = rgb
         return f"rgba({r},{g},{b},{alpha})"
 
-    # Couleurs des nœuds (blocs)
     node_colors = []
     for node in nodes:
         group = node.get("group")
         rgb = rgb_by_group.get(group, default_rgb)
         node_colors.append(rgba(rgb, 0.9))
+    
+    from collections import defaultdict
 
-    # Liens
+    # --- Positionnement des nœuds pour limiter les croisements ---
+    # On place les groupes sur des "couches" horizontales :
+    # prod_elec / prod_th -> gauche
+    # reseau               -> milieu gauche
+    # demande              -> milieu droite
+    # final                -> droite
+    group_layer = {
+        "prod_elec": 0,
+        "prod_th":   0,
+        "reseau":    1,
+        "demande":   2,
+        "final":     3,
+    }
+
+    layer_to_indices = defaultdict(list)
+    for i, node in enumerate(nodes):
+        g = node.get("group")
+        layer = group_layer.get(g, 1)  # défaut = reseau
+        layer_to_indices[layer].append(i)
+
+    x = [0.0] * len(nodes)
+    y = [0.0] * len(nodes)
+
+    for layer, idxs in layer_to_indices.items():
+        # position x de la couche (0 -> gauche, 1 -> droite)
+        x_base = 0.05 + 0.25 * layer
+        # on espace les nœuds verticalement dans la couche
+        step = 1.0 / (len(idxs) + 1)
+        for rank, idx in enumerate(idxs):
+            x[idx] = x_base
+            y[idx] = step * (rank + 1)
+
+    
     sources, targets, values, link_colors = [], [], [], []
     for link in links:
         src_id = link.get("source")
@@ -535,12 +395,12 @@ def _build_sankey_from_flow_block(block: dict):
                 valueformat=".0f",
                 valuesuffix=" kWh",
                 node=dict(
-                    pad=35,                     # distance entre blocs
-                    thickness=300,               # blocs bien plus larges
+                    pad=35,
+                    thickness=30,
                     line=dict(width=1.5, color="rgba(0,0,0,0.4)"),
                     label=labels,
                     color=node_colors,
-                    align="center",             # centre les nœuds horizontalement
+                    align="center",
                 ),
                 link=dict(
                     source=sources,
@@ -556,13 +416,9 @@ def _build_sankey_from_flow_block(block: dict):
     title = block.get("name") or f"Flux {block.get('type', '')}".strip()
     fig.update_layout(
         title_text=title,
-        # 👉 police globale (y compris labels des nœuds)
-        font=dict(
-            size=40,
-            color="rgba(0,0,0,0.85)",
-        ),
+        font=dict(size=14, color="rgba(0,0,0,0.85)"),
         margin=dict(l=80, r=80, t=40, b=40),
-        height=500,                 # diagramme plus haut
+        height=500,
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
@@ -570,14 +426,9 @@ def _build_sankey_from_flow_block(block: dict):
     return fig
 
 
-
-
-
-
-
 def show_sankey(project: dict):
     st.markdown(
-        "<div class='sf-section-title'>Diagramme de Sankey – Producteurs</div>",
+        "<div class='sf-section-title'>Diagramme de Sankey – Producteurs / Bilan</div>",
         unsafe_allow_html=True,
     )
 
@@ -589,7 +440,6 @@ def show_sankey(project: dict):
         st.info("Aucun flux n’a été calculé. Retourne en Phase 1 et relance les calculs.")
         return
 
-    # --- liste à plat de tous les flow_blocks avec un label lisible ---
     options = []
     for bat_id, blocks in bat_flows.items():
         for i, block in enumerate(blocks):
@@ -605,8 +455,10 @@ def show_sankey(project: dict):
         return
 
     labels = [lbl for lbl, _ in options]
+    mapping = {lbl: blk for lbl, blk in options}
+
     selected_label = st.selectbox("Sélectionne un bloc de flux :", labels)
-    selected_block = dict(options)[selected_label]
+    selected_block = mapping[selected_label]
 
     fig = _build_sankey_from_flow_block(selected_block)
     if fig is None:
@@ -615,7 +467,6 @@ def show_sankey(project: dict):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- petit tableau récapitulatif des totaux ---
     totals = selected_block.get("totals", {})
     if totals:
         st.markdown("#### Bilan énergétique du bloc sélectionné")
@@ -624,11 +475,399 @@ def show_sankey(project: dict):
         st.dataframe(df_tot, use_container_width=True)
 
 
+# =====================================================================
+# 📊 ÉCONOMIE
+# =====================================================================
 
+def show_economics(project: dict):
+    st.header("📊 Analyse économique")
+
+    econ_by_bat = project.get("results", {}).get("economics_by_batiment", {})
+
+    if not econ_by_bat:
+        st.info("Aucune donnée économique disponible (vérifie run_calculations).")
+        return
+
+    rows = []
+    detail_rows = []
+    batiments = project.get("batiments", [])
+
+    for bat_id, econ in econ_by_bat.items():
+        # Compat : si l'ancien format (flat) existe, on le supporte
+        if isinstance(econ, dict) and "by_type" in econ:
+            totals = econ
+            by_type = econ.get("by_type", {}) or {}
+        else:
+            totals = econ
+            by_type = {}
+
+        nom_bat = f"Bâtiment {bat_id}"
+        if isinstance(bat_id, int) and bat_id < len(batiments):
+            nom_bat = batiments[bat_id].get("nom", nom_bat)
+
+        capex = float(totals.get("capex_total_CHF", 0.0) or 0.0)
+        opex = float(totals.get("opex_annual_CHF", 0.0) or 0.0)
+        prod = float(totals.get("production_totale_kWh", 0.0) or 0.0)
+        lcoe = float(totals.get("lcoe_global_CHF_kWh", 0.0) or 0.0)
+
+        rows.append({
+            "Bâtiment": nom_bat,
+            "CAPEX total [CHF]": round(capex, 1),
+            "OPEX annuel [CHF/an]": round(opex, 1),
+            "Production totale [kWh]": round(prod, 1),
+            "LCOE global [CHF/kWh]": round(lcoe, 4),
+        })
+
+        # Détail par type de machine (pv, pac, boiler, ...)
+        for mtype, stats in by_type.items():
+            detail_rows.append({
+                "Bâtiment": nom_bat,
+                "Type de machine": mtype,
+                "CAPEX [CHF]": round(stats.get("capex_total_CHF", 0.0) or 0.0, 1),
+                "OPEX annuel [CHF/an]": round(stats.get("opex_annual_CHF", 0.0) or 0.0, 1),
+                "Production [kWh/an]": round(stats.get("production_machine_kWh", 0.0) or 0.0, 1),
+                "LCOE type [CHF/kWh]": round(stats.get("lcoe_machine_CHF_kWh", 0.0) or 0.0, 4),
+            })
+
+    df = pd.DataFrame(rows)
+    st.subheader("Vue globale par bâtiment")
+    st.dataframe(df, use_container_width=True)
+
+    if not df.empty:
+        st.subheader("CAPEX par bâtiment")
+        fig_capex = px.bar(df, x="Bâtiment", y="CAPEX total [CHF]", text_auto=True)
+        st.plotly_chart(fig_capex, use_container_width=True)
+
+        st.subheader("LCOE global par bâtiment")
+        fig_lcoe = px.bar(df, x="Bâtiment", y="LCOE global [CHF/kWh]", text_auto=True)
+        st.plotly_chart(fig_lcoe, use_container_width=True)
+
+    # ----- Détail par type de machine -----
+    if detail_rows:
+        st.markdown("---")
+        st.subheader("Détail par type de machine")
+
+        df_detail = pd.DataFrame(detail_rows)
+        st.dataframe(df_detail, use_container_width=True)
+
+        # Camembert CAPEX par techno pour un bâtiment choisi
+        bat_list = df["Bâtiment"].tolist()
+        selected_bat = st.selectbox(
+            "Bâtiment pour détail CAPEX par technologie",
+            options=bat_list,
+        )
+
+        df_bat = df_detail[df_detail["Bâtiment"] == selected_bat]
+        if not df_bat.empty:
+            fig_pie = px.pie(
+                df_bat,
+                names="Type de machine",
+                values="CAPEX [CHF]",
+                title=f"Répartition CAPEX par technologie – {selected_bat}",
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+    else:
+        st.info("Pas encore de détail par type de machine (by_type vide).")
+
+
+
+# =====================================================================
+# AUTRES SECTIONS (placeholders)
+# =====================================================================
+
+# =====================================================================
+# 🔍 COMPARAISON PV : MESURÉ vs THÉORIQUE (STANDARD)
+# =====================================================================
+
+def _iter_pv_blocks_with_comparison(project: dict):
+    """
+    Génère (label, flow_block) pour tous les blocs PV qui ont une
+    comparaison mensuelle mesuré vs théorique.
+    """
+    results = project.get("results", {}) or {}
+    flows = results.get("flows", {}) or {}
+    bat_flows = flows.get("batiments", {}) or {}
+
+    for bat_id, blocks in bat_flows.items():
+        for fb in blocks:
+            if fb.get("type") != "pv":
+                continue
+
+            profiles = fb.get("profiles") or {}
+            if "pv_monthly_comparison" not in profiles:
+                continue
+
+            meta = fb.get("meta", {}) or {}
+            bat_nom = meta.get("batiment_nom", f"Bâtiment {bat_id}")
+            ouv_nom = meta.get("ouvrage_nom", "")
+            pv_label = meta.get("pv_label", "PV")
+
+            label = f"{bat_nom} – {ouv_nom} – {pv_label}"
+            yield label, fb
+
+
+def render_pv_comparison_standard(project: dict):
+    """
+    Vue 'Comparaison standard' pour les producteurs PV :
+    - Tableau mensuel mesuré vs théorique
+    - Graphique barres
+    - PR global
+    """
+    pv_blocks = list(_iter_pv_blocks_with_comparison(project))
+
+    if not pv_blocks:
+        st.info(
+            "Aucune comparaison PV disponible. Vérifie que :\n"
+            "- la station météo est définie en Phase 1,\n"
+            "- les paramètres de module PV (Puissance, Surface, Rendement) sont renseignés,\n"
+            "- le producteur est bien de type PV avec profil de production."
+        )
+        return
+
+    labels = [lbl for lbl, _ in pv_blocks]
+    st.markdown("### Comparaison production PV – Mesurée vs théorique")
+
+    selected_label = st.selectbox(
+        "Sélectionne un producteur PV",
+        options=labels,
+    )
+
+    # Récupérer le bloc sélectionné
+    fb_map = {lbl: blk for lbl, blk in pv_blocks}
+    fb = fb_map[selected_label]
+
+    profiles = fb.get("profiles", {})
+    comp_records = profiles.get("pv_monthly_comparison", [])
+
+    if not comp_records:
+        st.warning("Pas de données de comparaison pour ce producteur PV.")
+        return
+
+    comp_df = pd.DataFrame(comp_records)
+
+    # Sécuriser la colonne mois
+    if "month" in comp_df.columns:
+        comp_df = comp_df.sort_values("month")
+        comp_df["month_label"] = comp_df["month"].astype(int).astype(str)
+    else:
+        comp_df["month"] = range(1, len(comp_df) + 1)
+        comp_df["month_label"] = comp_df["month"].astype(int).astype(str)
+
+    # ----- PR global & totaux -----
+    totals = fb.get("totals", {}) or {}
+    pv_meas_total = totals.get("pv_measured_kWh_total", None)
+    pv_theo_total = totals.get("pv_theoretical_kWh_total", None)
+    pv_PR_global = totals.get("pv_PR_global", None)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if pv_meas_total is not None:
+            st.metric(
+                "Prod. mesurée annuelle [kWh]",
+                f"{pv_meas_total:,.0f}".replace(",", " ")
+            )
+        else:
+            st.metric("Prod. mesurée annuelle [kWh]", "—")
+    with col2:
+        if pv_theo_total is not None:
+            st.metric(
+                "Prod. théorique annuelle [kWh]",
+                f"{pv_theo_total:,.0f}".replace(",", " ")
+            )
+        else:
+            st.metric("Prod. théorique annuelle [kWh]", "—")
+    with col3:
+        if pv_PR_global is not None:
+            st.metric("PR global [-]", f"{pv_PR_global:.2f}")
+        else:
+            st.metric("PR global [-]", "—")
+
+    st.markdown("---")
+
+    # ----- Graphique barres Mesuré vs Théorique -----
+    fig = go.Figure()
+    fig.add_bar(
+        x=comp_df["month_label"],
+        y=comp_df["pv_measured_kWh"],
+        name="Mesuré [kWh/mois]",
+    )
+    fig.add_bar(
+        x=comp_df["month_label"],
+        y=comp_df["pv_theoretical_kWh"],
+        name="Théorique [kWh/mois]",
+        opacity=0.7,
+    )
+
+    fig.update_layout(
+        barmode="group",
+        xaxis_title="Mois",
+        yaxis_title="Énergie [kWh/mois]",
+        height=400,
+        margin=dict(l=40, r=20, t=40, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ----- Tableau détaillé -----
+    st.markdown("#### Détail mensuel")
+    st.dataframe(
+        comp_df[[
+            "month",
+            "pv_measured_kWh",
+            "pv_theoretical_kWh",
+            "ratio_theoretical_over_measured",
+        ]],
+        use_container_width=True,
+    )
+
+
+# =====================================================================
+# COMPARAISON STANDARD PV
+# =====================================================================
 
 def show_comparison(project: dict):
-    st.markdown("<div class='sf-section-title'>Comparaison standard</div>", unsafe_allow_html=True)
-    st.info("Section prévue pour comparer différents scénarios / variantes.")
+    st.markdown(
+        "<div class='sf-section-title'>Comparaison standard PV</div>",
+        unsafe_allow_html=True,
+    )
+
+    results = project.get("results", {}) or {}
+    pv_std = results.get("pv_standard", []) or []
+
+    if not pv_std:
+        st.info(
+            "Aucune donnée pour la comparaison standard PV. "
+            "Ajoute au moins un producteur PV correctement paramétré en Phase 1 "
+            "et relance les calculs."
+        )
+        return
+
+    # -------------------------------------------------------------
+    # 1) Tableau récapitulatif des paramètres PV
+    # -------------------------------------------------------------
+    rows = []
+    warnings_msgs = []
+
+    for rec in pv_std:
+        rows.append({
+            "Bâtiment": rec.get("batiment_nom", ""),
+            "Ouvrage": rec.get("ouvrage_nom", ""),
+            "Technologie": rec.get("producer_techno", ""),
+            "P_installée [kW]": rec.get("installed_kw", 0.0),
+            "Orientation [°]": rec.get("orientation_deg"),
+            "Inclinaison [°]": rec.get("inclinaison_deg"),
+            "P_module [kW]": rec.get("p_module_kw"),
+            "Surface module [m²]": rec.get("area_module_m2"),
+            "Rendement module [%]": rec.get("eta_mod_pct"),
+            "Prod. théorique [kWh/kW/an]": rec.get("theoretical_annual_kWh_per_kW"),
+            "Prod. mesurée [kWh/kW/an]": rec.get("measured_annual_kWh_per_kW"),
+        })
+
+        missing = rec.get("missing_fields", []) or []
+        if missing:
+            label = f"{rec.get('batiment_nom','')} – {rec.get('ouvrage_nom','')} – {rec.get('producer_techno','PV')}"
+            warnings_msgs.append(
+                f"Producteur PV « {label} » : infos manquantes → {', '.join(missing)}"
+            )
+
+        if rec.get("calc_error"):
+            label = f"{rec.get('batiment_nom','')} – {rec.get('ouvrage_nom','')} – {rec.get('producer_techno','PV')}"
+            warnings_msgs.append(
+                f"Erreur de calcul pour « {label} » : {rec['calc_error']}"
+            )
+
+    df = pd.DataFrame(rows)
+    st.subheader("Paramètres PV utilisés pour la comparaison standard")
+    st.dataframe(df, use_container_width=True)
+
+    for msg in warnings_msgs:
+        st.warning(msg)
+
+    # -------------------------------------------------------------
+    # 2) Profil mensuel théorique vs mesuré (on prend le 1er producteur valide)
+    # -------------------------------------------------------------
+    first_with_profile = None
+    for rec in pv_std:
+        if rec.get("theoretical_profile_kWh_per_kW") is not None:
+            first_with_profile = rec
+            break
+
+    if first_with_profile is None:
+        st.info("Profil mensuel théorique non disponible (aucun producteur PV avec profil calculé).")
+        return
+
+    theo_vals = first_with_profile.get("theoretical_profile_kWh_per_kW")
+    meas_vals = first_with_profile.get("measured_profile_kWh_per_kW")
+
+    def _to_list(x):
+        if isinstance(x, pd.Series):
+            return x.tolist()
+        if isinstance(x, (list, tuple)):
+            return list(x)
+        return None
+
+    theo_vals = _to_list(theo_vals)
+    meas_vals = _to_list(meas_vals)
+
+    if theo_vals is None or len(theo_vals) != 12:
+        if first_with_profile.get("calc_error"):
+            st.warning(f"Erreur de calcul PV : {first_with_profile['calc_error']}")
+        else:
+            st.info("Profil mensuel théorique non disponible (liste incorrecte).")
+        return
+
+    mois_labels = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin",
+                   "Juil", "Août", "Sept", "Oct", "Nov", "Déc"]
+    df_plot = pd.DataFrame({"Mois": mois_labels, "kWh/kW_th": theo_vals})
+
+    if meas_vals is not None and len(meas_vals) == 12:
+        df_plot["kWh/kW_meas"] = meas_vals
+
+    bat_nom = first_with_profile.get("batiment_nom", "")
+    ouv_nom = first_with_profile.get("ouvrage_nom", "")
+    techno = first_with_profile.get("producer_techno", "PV")
+
+    st.subheader(f"Profil théorique mensuel – {bat_nom} / {ouv_nom} / {techno}")
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot["Mois"],
+            y=df_plot["kWh/kW_th"],
+            mode="lines+markers",
+            name="Théorique",
+        )
+    )
+
+    if "kWh/kW_meas" in df_plot.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df_plot["Mois"],
+                y=df_plot["kWh/kW_meas"],
+                mode="lines+markers",
+                name="Mesuré",
+            )
+        )
+
+    fig.update_layout(
+        xaxis_title="Mois",
+        yaxis_title="Production spécifique [kWh/kW]",
+        height=350,
+        margin=dict(l=40, r=20, t=40, b=40),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+
 
 
 def show_phases_analysis(project: dict):

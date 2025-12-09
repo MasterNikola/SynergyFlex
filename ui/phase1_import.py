@@ -569,6 +569,7 @@ def _build_flat_project_for_calculations(data: Dict[str, Any]) -> Dict[str, Any]
 
     return {
         "nom": data["meta"].get("nom_projet", "Projet sans nom"),
+        "meta": data["meta"],         
         "batiments": bats_flat,
         "ouvrages": ouvr_flat,
         "params": data["simu_params"],
@@ -709,18 +710,32 @@ def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
                 if sheets:
                     st.caption(f"📄 Source : {source_label}")
                     sheet_names = list(sheets.keys())
+                
+                    # valeur courante (si déjà choisie auparavant)
+                    current_sheet = prod.get("prod_profile_sheet", None)
+                    sheet_index = sheet_names.index(current_sheet) if current_sheet in sheet_names else 0
+                
                     selected_sheet = st.selectbox(
                         "Feuille à utiliser",
                         options=sheet_names,
-                        key=f"prod_sheet_{bi}_{oi}_{pi}"
+                        index=sheet_index,
+                        key=f"prod_sheet_{bi}_{oi}_{pi}",
                     )
+                
+                    prod["prod_profile_sheet"] = selected_sheet
+                
                     df = sheets[selected_sheet]
                     cols = df.columns.tolist()
+                    current_col = prod.get("prod_profile_col", None)
+                    col_index = cols.index(current_col) if current_col in cols else 0
+                    
                     selected_col = st.selectbox(
                         "Colonne de production à utiliser",
                         options=cols,
-                        key=f"prod_col_{bi}_{oi}_{pi}"
+                        index=col_index,
+                        key=f"prod_col_{bi}_{oi}_{pi}",
                     )
+                    
                     prod["prod_profile_sheet"] = selected_sheet
                     prod["prod_profile_col"] = selected_col
                     # Test techno

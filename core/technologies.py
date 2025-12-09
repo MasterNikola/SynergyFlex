@@ -1,4 +1,4 @@
-# core/loaders/technologies.py
+# core/technologies.py
 
 import os
 import pandas as pd

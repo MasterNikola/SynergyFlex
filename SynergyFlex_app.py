@@ -46,7 +46,7 @@ def render_header():
     # 3 colonnes pour centrer proprement
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        st.image("logo_synergyflex.png", use_column_width=True)
+        st.image("logo_synergyflex.png", use_container_width=True)
 
 
 def main():
