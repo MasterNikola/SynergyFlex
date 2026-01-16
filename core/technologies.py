@@ -65,7 +65,7 @@ def load_producer_technologies(type_general: str) -> dict:
 STOCKAGE_REGISTRY = {
     "Electrique": {
         "label": "Stockage électrique",
-        "file": "electric_storage.xlsx"
+        "file": "electricity_storage.xlsx"
     },
     "Thermique": {
         "label": "Stockage thermique",
@@ -97,7 +97,7 @@ ENGINE_BY_TECHNO = {
     # "Type général"      "Nom EXACT de la techno dans l'Excel" : "ID interne"
     ("Electrique", "Photovoltaic panel"): "pv",
     # ("Thermique", "PAC air-eau"): "pac_ae",
-    # ("Electrique", "Batterie Li-ion"): "bat_li_ion",
+    ("Electrique", "Battery Li-ion") : "bat_li_ion",
 }
 
 def infer_engine_from_type_and_techno(type_general: str, techno_name: str) -> str | None:

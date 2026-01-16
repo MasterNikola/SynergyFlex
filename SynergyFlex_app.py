@@ -22,23 +22,68 @@ def sidebar_menu():
     if st.sidebar.button("🆕 Nouveau projet"):
         st.session_state["project"] = None
         st.session_state["validated"] = False
-        st.experimental_rerun()
+        st.rerun()
+
 
     uploaded = st.sidebar.file_uploader("📂 Charger un projet (.json)", type=["json"])
     if uploaded:
         st.session_state["project"] = import_project_from_json(uploaded)
         st.session_state["validated"] = True
         st.success("Projet chargé !")
-        st.experimental_rerun()
+        st.rerun()
+
 
     if st.session_state["project"] is not None:
-        data = export_project_dict(st.session_state["project"])
+        data_light = export_project_dict(st.session_state["project"], include_results=False)
         st.sidebar.download_button(
             "💾 Exporter le projet",
-            data=data,
+            data=data_light,
             file_name="projet_synergyflex.json",
             mime="application/json",
         )
+    
+        data_full = export_project_dict(st.session_state["project"], include_results=True, include_timeseries=False)
+
+        if data_full is None:
+            st.sidebar.error("Export debug: export_project_dict a renvoyé None (voir io_project.py).")
+        else:
+            st.sidebar.download_button(
+                "🐞 Export complet (debug résumé)",
+                data=data_full,
+                file_name="synergyflex_results_summary.json",
+                mime="application/json",
+            )
+
+        # Export timeseries séparé
+        ts_store = ((st.session_state["project"].get("results") or {}).get("timeseries_store") or {})
+        if ts_store:
+            import pandas as pd
+            rows = []
+            bats = (ts_store.get("batiments") or {})
+            for bat_id, bd in bats.items():
+                ouvs = (bd.get("ouvrages") or {})
+                for oi, rec in ouvs.items():
+                    idx = rec.get("index") or []
+                    # colonnes possibles
+                    cols = {k: v for k, v in rec.items() if isinstance(v, list) and k != "index"}
+                    for i, t in enumerate(idx):
+                        row = {
+                            "batiment_id": bat_id,
+                            "ouvrage_index": oi,
+                            "time": t,
+                        }
+                        for k, v in cols.items():
+                            row[k] = v[i] if i < len(v) else None
+                        rows.append(row)
+
+            df_ts = pd.DataFrame(rows)
+            csv_bytes = df_ts.to_csv(index=False).encode("utf-8")
+            st.sidebar.download_button(
+                "📈 Export timeseries (CSV)",
+                data=csv_bytes,
+                file_name="synergyflex_timeseries.csv",
+                mime="text/csv",
+            )
 
 
 def render_header():

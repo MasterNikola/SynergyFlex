@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -11,6 +11,9 @@ from core.climate_data import get_station_monthly
 from core.economics import compute_tech_economics
 
 from core.nodes_ontology import node_pv, node_elec_load, node_elec_grid
+
+from core.utils.timebase import build_monthly_kwh_from_df
+
 
 
 
@@ -244,6 +247,7 @@ def compute_pv_economics(
             "Capex [CHF/kW]",
             "CAPEX (CHF/kW)",
             "Investissement spécifique (CHF/kW)",
+            "Capex",
         ],
         default=0.0,
     )
@@ -270,6 +274,7 @@ def compute_pv_economics(
             "Opex [CHF/an]",
             "OPEX (CHF/an)",
             "Coûts fixes (CHF/an)",
+            "Opex",
         ],
         default=0.0,
     )
@@ -315,8 +320,13 @@ def compute_pv_economics(
         "pv_lcoe_CHF_kWh": lcoe,          # spécifique PV
         "lifetime_years": lifetime_years, # générique
         "lcoe_machine_CHF_kWh": lcoe,     # générique pour l'agrégateur
-    }
 
+        # --- Détails (utiles pour Phase 2 / debug) ---
+        "capex_spec_CHF_kW": capex_spec_kw,
+        "capex_total_direct_CHF": capex_total_direct,
+        "opex_global_CHF_an": opex_global,
+        "opex_spec_CHF_kW_an": opex_spec_kw_an,
+    }
 
 # ================================================================
 # Rendement géométrique PV (orientation / inclinaison)
@@ -522,42 +532,36 @@ def aggregate_pv_profile_monthly(
     Agrège la production utilisateur en kWh/mois, indexé 1..12.
 
     Priorité :
-      1) time_col → conversion datetime → groupby mois
+      1) time_col (ou auto-détection) -> datetime -> groupby mois   [PATCH 1 via timebase]
       2) colonnes (Annee, Mois)
-      3) 12 valeurs sans date → assumé Jan→Déc
+      3) 12 valeurs sans date -> assumé Jan→Déc                    [PATCH 1 via timebase / fallback final]
     """
-
     if prod_profile_col not in df.columns:
         raise KeyError(f"Colonne '{prod_profile_col}' introuvable.")
 
-    serie = pd.to_numeric(df[prod_profile_col], errors="coerce").fillna(0)
+    # 1) PATCH 1 : cas time_col (ou auto-détection) + fallback "12 valeurs"
+    monthly = build_monthly_kwh_from_df(df, energy_col=prod_profile_col, time_col=time_col)
+    if monthly is not None:
+        return monthly.reindex(range(1, 13), fill_value=0.0)
 
-    # Cas 1 : vraie colonne de dates
-    if time_col and time_col in df.columns:
-        dt = pd.to_datetime(df[time_col], errors="coerce")
-        mois = dt.dt.month
-        monthly = serie.groupby(mois).sum()
-
-    # Cas 2 : colonnes "Annee", "Mois"
-    elif {"Annee", "Mois"}.issubset(df.columns):
+    # 2) Fallback : colonnes "Annee", "Mois"
+    if {"Annee", "Mois"}.issubset(df.columns):
+        serie = pd.to_numeric(df[prod_profile_col], errors="coerce").fillna(0.0)
         dt = pd.to_datetime(
             df["Annee"].astype(str) + "-" + df["Mois"].astype(str) + "-01",
             errors="coerce"
         )
         mois = dt.dt.month
         monthly = serie.groupby(mois).sum()
+        return monthly.reindex(range(1, 13), fill_value=0.0)
 
-    # Cas 3 : assume série déjà mensuelle Jan→Dec
-    else:
-        monthly = serie.reset_index(drop=True)
-        if len(monthly) > 12:
-            monthly = monthly.iloc[:12]
-        monthly.index = range(1, len(monthly) + 1)
+    # 3) Dernier recours : 12 valeurs -> Jan→Déc (si timebase n'a pas pu)
+    serie = pd.to_numeric(df[prod_profile_col], errors="coerce").fillna(0.0).reset_index(drop=True)
+    if len(serie) > 12:
+        serie = serie.iloc[:12]
+    serie.index = range(1, len(serie) + 1)
+    return serie.reindex(range(1, 13), fill_value=0.0)
 
-    # Force matrice 1..12
-    monthly = monthly.reindex(range(1, 13), fill_value=0.0)
-
-    return monthly
 
 def compare_pv_measured_vs_theoretical_monthly(
     df_prod: pd.DataFrame,
@@ -758,3 +762,212 @@ def build_pv_standard_profile(prod: Dict[str, Any], project_meta: Dict[str, Any]
     return profil, []
 
 
+def compute_pv_self_consumption_split(
+    annual_prod_kwh: float,
+    self_consumption_rate: float = 0.20,
+    method: str = "fixed_rate",
+    annual_load_kwh: Optional[float] = None,
+) -> Tuple[float, float, Dict[str, Any]]:
+    """
+    Retourne (E_self, E_inj, meta).
+
+    method:
+      - "fixed_rate": E_self = prod * rate
+      - "future_load_based": placeholder pour plus tard (ex: min(prod, load)*factor)
+    """
+    annual_prod_kwh = float(annual_prod_kwh or 0.0)
+    r = float(self_consumption_rate or 0.0)
+
+    if annual_prod_kwh <= 0:
+        return 0.0, 0.0, {"method": method, "rate": r}
+
+    if method == "fixed_rate":
+        r = max(0.0, min(1.0, r))
+        e_self = annual_prod_kwh * r
+        e_inj = annual_prod_kwh - e_self
+        return e_self, e_inj, {"method": method, "rate": r}
+
+    # placeholder pour plus tard
+    # ex: basé sur charge annuelle ou profil horaire
+    e_self = annual_prod_kwh * r
+    e_inj = annual_prod_kwh - e_self
+    return e_self, e_inj, {"method": "future_load_based_stub", "rate": r, "annual_load_kwh": annual_load_kwh}
+
+def compute_ru_pv_added_weighted(
+    p_kw: float,
+    inclination_deg: Optional[float] = None,
+    altitude_m: Optional[float] = None,
+    parking: bool = False,
+) -> Dict[str, Any]:
+    """
+    RU PV (OEneR annexe 2.1) – installations AJOUTÉES / ISOLÉES uniquement.
+    Pondération par tranches, barèmes valables À PARTIR DU 01.04.2025.
+
+    Taux (ajouté/isolé):
+      - 0–30 kW   : 360 CHF/kW
+      - 30–100 kW : 300 CHF/kW
+      - >100 kW   : 250 CHF/kW
+
+    Contribution de base: 0 CHF (>= 01.04.2025)
+
+    Bonus:
+      - inclinaison >= 75° : +200 CHF/kW
+      - altitude >= 1500 m : +250 CHF/kW
+      - parking            : +250 CHF/kW
+    """
+
+    p_kw = float(p_kw or 0.0)
+    if p_kw < 2:
+        return {
+            "ru_total_chf": 0.0,
+            "ru_breakdown": [],
+            "ru_bonus_chf_kw": 0.0,
+            "ru_bonus_total_chf": 0.0,
+            "assumptions": {"period": ">= 01.04.2025", "type": "added_or_isolated", "weighted": True},
+        }
+
+    # --- taux ajoutés/isolés (>= 01.04.2025) ---
+    rate_t1, rate_t2, rate_t3 = 360.0, 300.0, 250.0
+
+    # --- bonus CHF/kW ---
+    bonus_chf_kw = 0.0
+    if inclination_deg is not None and float(inclination_deg) <= 75.0:
+        bonus_chf_kw += 200.0
+    if altitude_m is not None and float(altitude_m) >= 1500.0:
+        bonus_chf_kw += 250.0
+    if parking:
+        bonus_chf_kw += 250.0
+
+    breakdown = []
+
+    # tranche 0–30
+    t1_kw = min(p_kw, 30.0)
+    t1_rate = rate_t1 + bonus_chf_kw
+    t1_chf = t1_kw * t1_rate
+    breakdown.append({"from_kw": 0.0, "to_kw": 30.0, "kw": t1_kw, "rate_chf_kw": t1_rate, "chf": t1_chf})
+
+    # tranche 30–100
+    if p_kw > 30.0:
+        t2_kw = min(p_kw - 30.0, 70.0)
+        t2_rate = rate_t2 + bonus_chf_kw
+        t2_chf = t2_kw * t2_rate
+        breakdown.append({"from_kw": 30.0, "to_kw": 100.0, "kw": t2_kw, "rate_chf_kw": t2_rate, "chf": t2_chf})
+
+    # tranche >100
+    if p_kw > 100.0:
+        t3_kw = p_kw - 100.0
+        t3_rate = rate_t3 + bonus_chf_kw
+        t3_chf = t3_kw * t3_rate
+        breakdown.append({"from_kw": 100.0, "to_kw": None, "kw": t3_kw, "rate_chf_kw": t3_rate, "chf": t3_chf})
+
+    ru_total_chf = sum(x["chf"] for x in breakdown)
+
+    return {
+        "ru_total_chf": ru_total_chf,
+        "ru_breakdown": breakdown,
+        "ru_bonus_chf_kw": bonus_chf_kw,
+        "ru_bonus_total_chf": bonus_chf_kw * p_kw,
+        "assumptions": {
+            "period": ">= 01.04.2025",
+            "type": "added_or_isolated",
+            "weighted": True,
+            "base_contribution_chf": 0.0,
+        },
+    }
+
+def compute_pv_cashflow_series(
+    capex_total_chf: float,
+    opex_annual_chf: float,
+    e_self_kwh: float,
+    e_inj_kwh: float,
+    price_buy_chf_kwh: float = 0.25,
+    price_sell_chf_kwh: float = 0.07,
+    years: int = 25,
+    ru_upfront_chf: float = 0.0,   # si tu veux intégrer la RU Pronovo
+) -> dict:
+    capex_total_chf = float(capex_total_chf or 0.0)
+    opex_annual_chf = float(opex_annual_chf or 0.0)
+
+    gain_self = float(e_self_kwh or 0.0) * float(price_buy_chf_kwh or 0.0)
+    gain_inj  = float(e_inj_kwh or 0.0)  * float(price_sell_chf_kwh or 0.0)
+    cashflow_year = gain_self + gain_inj - opex_annual_chf
+
+    years_list = list(range(0, years + 1))
+    annual = [0.0] * (years + 1)
+    cumulative = [0.0] * (years + 1)
+
+    # Année 0: investissement + RU upfront (si tu la mets au départ)
+    annual[0] = -capex_total_chf + ru_upfront_chf
+    cumulative[0] = annual[0]
+
+    for y in range(1, years + 1):
+        annual[y] = cashflow_year
+        cumulative[y] = cumulative[y-1] + annual[y]
+
+    payback_year = next((y for y in range(0, years + 1) if cumulative[y] >= 0), None)
+
+    return {
+        "years": years_list,
+        "annual_cashflow_chf": annual,
+        "cumulative_cashflow_chf": cumulative,
+        "gain_self_chf": gain_self,
+        "gain_inj_chf": gain_inj,
+        "cashflow_year_chf": cashflow_year,
+        "payback_year": payback_year,
+    }
+
+def compute_simulated_rooftop_pv_per_building(project):
+    """
+    Prend le projet et retourne les résultats PV simulés par bâtiment (structure identique à ton bloc actuel)
+    """
+    results = {"pv_proposed_by_batiment": {}}  # <- exactement comme tu fais déjà
+    # 🔁 Ici, colle tout ton bloc EXISTANT de simulation PV (avec for bi, bat in enumerate... etc)
+    # À la fin, retourne juste ce que tu veux stocker dans le projet :
+    return results["pv_proposed_by_batiment"]
+
+def reconstruct_pv_to_load_proportional_bounded(
+    pv_ts,
+    load_ts,
+    selfc_pct_input,
+):
+    """
+    Reconstruit PV->Load physiquement cohérent :
+    - bornage instantané : pv_to_load(t) <= min(pv(t), load(t))
+    - cible annuelle : selfc_pct_input * sum(PV)
+    - saturation si cible > max physique
+    """
+
+    # --- robust fraction 0..1 ---
+    pct_raw = 0.0 if selfc_pct_input in (None, "") else float(selfc_pct_input)
+    selfc_frac = pct_raw if pct_raw <= 1.0 else pct_raw / 100.0
+
+    pv = pv_ts.astype(float)
+    load = load_ts.astype(float)
+
+    # --- physical capacity ---
+    capacity = pv.combine(load, min)
+
+    pv_sum = float(pv.sum())
+    capacity_sum = float(capacity.sum())
+
+    target_kWh = selfc_frac * pv_sum
+    effective_target = min(target_kWh, capacity_sum)
+
+    if capacity_sum <= 0.0 or effective_target <= 0.0:
+        pv_to_load = pv * 0.0
+    else:
+        pv_to_load = capacity * (effective_target / capacity_sum)
+
+    # --- final safety ---
+    pv_to_load = pv_to_load.clip(lower=0.0)
+    pv_to_load = pv_to_load.where(pv_to_load <= pv, pv)
+    pv_to_load = pv_to_load.where(pv_to_load <= load, load)
+
+    meta = {
+        "selfc_pct_input": selfc_frac,
+        "selfc_pct_real": 0.0 if pv_sum <= 0 else pv_to_load.sum() / pv_sum,
+        "max_selfc_pct": 0.0 if pv_sum <= 0 else capacity_sum / pv_sum,
+        "saturated": target_kWh > capacity_sum,
+    }
+
+    return pv_to_load, meta
