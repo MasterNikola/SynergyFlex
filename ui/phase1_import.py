@@ -23,6 +23,72 @@ import streamlit.components.v1 as components
 from ui.helpers.excel_source import choose_excel_source
 
 
+# -----------------------------------------------------------------------------
+# UI translation helpers (UI-only)
+# IMPORTANT:
+# - We do NOT translate internal keys/values used by the core.
+# - For widget options whose values are used in logic, we keep the underlying
+#   French value but show an English label via format_func.
+# -----------------------------------------------------------------------------
+
+_UI_OPTION_LABELS = {
+    # generic
+    "Aucune": "None",
+    "(choisir)": "(select)",
+    "(aucune)": "(none)",
+    "Oui": "Yes",
+    "Non": "No",
+    "Partiellement": "Partially",
+    "Importer un fichier": "Upload a file",
+    "Importer un fichier Excel": "Upload an Excel file",
+    "Upload an Excel/CSV file": "Upload an Excel/CSV file",
+    "Réutiliser fichier du projet": "Reuse project file",
+    "Réutiliser un fichier du projet": "Reuse project file",
+    "Réutiliser un fichier du bâtiment": "Reuse building file",
+    "Réutiliser fichier du bâtiment": "Reuse building file",
+    "Réutiliser un fichier de l’ouvrage": "Reuse unit file",
+    "Réutiliser un fichier de l'ouvrage": "Reuse unit file",
+    "Réutiliser un fichier de l’ouvrage": "Reuse unit file",
+    "Réutiliser un fichier de l'ouvrage": "Reuse unit file",
+    "Upload en attente": "Upload pending",
+
+    # simulation / optimisation
+    "Hourly": "Hourly",
+    "Daily": "Daily",
+    "Monthly": "Monthly",
+    "Saisonnier": "Seasonal",
+    "15 min": "15 min",
+    "Aucune (simulation simple)": "None (simple simulation)",
+    "Optimisation coûts": "Cost optimisation",
+    "Optimisation CO₂": "CO₂ optimisation",
+    "Optimisation exergie": "Exergy optimisation",
+    "Équilibré": "Balanced",
+
+    # storage
+    "Simuler le stockage": "Simulate storage",
+    "Importer des mesures": "Import measured data",
+
+    # labels from core/technologies.py (we override UI only)
+    "Technologie électrique": "Electrical technology",
+    "Technologie thermique": "Thermal technology",
+    "Technologie mixte": "Hybrid technology",
+    "Stockage électrique": "Electrical storage",
+    "Stockage thermique": "Thermal storage",
+}
+
+_UI_TYPE_GENERAL = {
+    "Electric": "Electrical",
+    "Thermique": "Thermal",
+    "Mixte": "Hybrid",
+}
+
+def _ui_opt_label(x):
+    return _UI_OPTION_LABELS.get(x, x)
+
+def _ui_type_general_label(x):
+    return _UI_TYPE_GENERAL.get(x, x)
+
+
 
 def guess_time_col(df: pd.DataFrame):
     """
@@ -67,6 +133,7 @@ def _extract_ouvrages_with_data(data: dict) -> list:
                 "sheet_name": ouv.get("excel_sheet_name"),
                 "sre": ouv.get("sre_m2"),
                 "surface_enveloppe": ouv.get("surface_enveloppe_m2"),
+                "ath_over_sre_factor": ouv.get("ath_over_sre_factor"),
                 "time_col": ouv.get("time_col"),
                 "conso_elec_col": ouv.get("conso_elec_col"),
                 "conso_th_col": ouv.get("conso_th_col"),
@@ -79,18 +146,18 @@ def _extract_ouvrages_with_data(data: dict) -> list:
 def _default_phase1_data() -> Dict[str, Any]:
     return {
         "meta": {
-            "nom_projet": "",
-            "type_projet": "",
-            "commune": "",
-            "zone_climatique": "",
+            "Project_name": "",
+            "Project_type": "",
+            "Municipality": "",
+            "Climate zone": "",
         },
         "batiments": [],
         "simu_params": {
-            "pas_temps": "Horaire",
-            "duree_simulation_ans": 25,
-            "horizon_analyse_ans": 25,
-            "methode_optimisation": "Aucune (simulation simple)",
-            "critere_prioritaire": "Équilibré",
+            "Timestep": "Hourly",
+            "simulation_duration_years": 25,
+            "analysis_horizon_years": 25,
+            "optimisation_method": "None (simple simulation)",
+            "priority_criterion": "Balanced",
             "price_buy_chf_kwh": 0.25,
             "price_sell_chf_kwh": 0.06,
         },
@@ -101,21 +168,21 @@ def _default_phase1_data() -> Dict[str, Any]:
 def init_phase1_state():
     ss = st.session_state
     ss.setdefault("phase1_data", _default_phase1_data())
-    ss.setdefault("phase1_page", "📋 Données initiales")
+    ss.setdefault("phase1_page", "📋 Initial data")
 
 
 # ========== PAGE MÉTA PROJET ==========
 
 def page_meta(data: Dict[str, Any]):
     all_climate = load_climate_monthly()
-    st.header("Données initiales du projet")
+    st.header("Initial project data")
     meta = data["meta"]
 
-    meta["nom_projet"] = st.text_input("Nom du projet", value=meta.get("nom_projet", ""))
-    meta["type_projet"] = st.text_input("Type de projet (optionnel)", value=meta.get("type_projet", ""))
+    meta["Project_name"] = st.text_input("Project name", value=meta.get("Project_name", ""))
+    meta["Project_type"] = st.text_input("Project type (optional)", value=meta.get("Project_type", ""))
 
     # --- Choix du canton et station météo associée ---
-    st.subheader("Station météo de référence")
+    st.subheader("Reference weather station")
     
     # Dictionnaire des cantons et leurs stations météo
     stations_par_canton = {
@@ -162,7 +229,7 @@ def page_meta(data: Dict[str, Any]):
     
     # Valeur actuelle ou valeur par défaut
     selected_canton = meta.get("canton", liste_cantons[0])
-    selected_canton = st.selectbox("Canton", options=liste_cantons, index=liste_cantons.index(selected_canton) if selected_canton in liste_cantons else 0)
+    selected_canton = st.selectbox("Canton", options=liste_cantons, index=liste_cantons.index(selected_canton) if selected_canton in liste_cantons else 0, format_func=_ui_opt_label)
     meta["canton"] = selected_canton
     
     # Mise à jour des stations météo en fonction du canton
@@ -171,13 +238,13 @@ def page_meta(data: Dict[str, Any]):
     
     if stations_disponibles:
         selected_station = st.selectbox(
-            "Station météo associée",
+            "Associated weather station",
             options=stations_disponibles,
             index=stations_disponibles.index(selected_station) if selected_station in stations_disponibles else 0
         )
         meta["station_meteo"] = selected_station
     else:
-        st.info("Aucune station disponible pour ce canton.")
+        st.info("No station available for this canton.")
         
     if "station_meteo" in meta and meta["station_meteo"]:
         selected_station = meta["station_meteo"]
@@ -187,7 +254,7 @@ def page_meta(data: Dict[str, Any]):
         else:
             meta["climate_data"] = None
 
-    st.markdown("### 📈 Données climatiques – Station sélectionnée")
+    st.markdown("### 📈 Climate data — selected station")
 
     station = meta.get("station_meteo")
 
@@ -211,25 +278,26 @@ def page_meta(data: Dict[str, Any]):
                 x="Mois",
                 y="T_ext",
                 markers=True,
-                title=f"Température extérieure moyenne – {station}",
+                title=f"Average outdoor temperature — {station}",
             )
             st.plotly_chart(fig_t, use_container_width=True)
     else:
-        st.info("Aucune donnée climatique trouvée pour cette station.")
+        st.info("No climate data found for this station.")
         meta["climate_data"] = None
 
     st.markdown("---")
-    st.subheader("Source de données du projet")
+    st.subheader("Project data source")
 
     meta["global_data_mode"] = st.radio(
-        "Données globales pour le projet :",
+        "Project-level data:",
         options=["Aucune", "Importer un fichier"],
         index=["Aucune", "Importer un fichier"].index(meta.get("global_data_mode", "Aucune")),
-        key="meta_data_mode"
+        key="meta_data_mode",
+        format_func=_ui_opt_label,
     )
 
     if meta["global_data_mode"] == "Importer un fichier":
-        uploaded_global = st.file_uploader("Importer un fichier Excel global", type=["xlsx", "xls", "csv"], key="global_excel_upload")
+        uploaded_global = st.file_uploader("Upload a global Excel file", type=["xlsx", "xls", "csv"], key="global_excel_upload")
         if uploaded_global:
             try:
                 sheets = load_excel_file(uploaded_global)
@@ -237,13 +305,13 @@ def page_meta(data: Dict[str, Any]):
                     "file_name": uploaded_global.name,
                     "sheets": sheets
                 }
-                st.success(f"Fichier importé : {uploaded_global.name}")
+                st.success(f"File imported: {uploaded_global.name}")
             except Exception as e:
-                st.error(f"Erreur lors de l'import : {e}")
+                st.error(f"Import error: {e}")
 
 
     if meta.get("global_excel", {}).get("sheets"):
-        st.caption("Aperçu du fichier global")
+        st.caption("Global file preview")
         first_sheet = list(meta["global_excel"]["sheets"].keys())[0]
         st.dataframe(meta["global_excel"]["sheets"][first_sheet].head())
         
@@ -253,9 +321,9 @@ def page_meta(data: Dict[str, Any]):
     meta["debug"].setdefault("store_timeseries", False)
   
     meta["debug"]["store_timeseries"] = st.checkbox(
-        "🐞 Stocker les séries temporelles (export séparé)",
+        "🐞 Store time series (separate export)",
         value=bool(meta["debug"].get("store_timeseries", False)),
-        help="Active le stockage des timeseries (load/PV/batterie/grid) dans results['timeseries_store'] pour export séparé. Peut être volumineux.",
+        help="Stores time series (load/PV/battery/grid) in results['timeseries_store'] for a separate export. Can be large.",
         )
     
     meta.setdefault("pv_defaults", {})
@@ -264,34 +332,56 @@ def page_meta(data: Dict[str, Any]):
 
 
 def page_batiments_ouvrages(data: Dict[str, Any]):
-    st.header("Bâtiments & ouvrages")
+    st.header("Buildings & units")
     batiments: List[Dict[str, Any]] = data["batiments"]
+    # -------------------------
+    # Helpers: keep SRE / factor / A_th in sync (bidirectional)
+    # -------------------------
+    DEFAULT_ATH_OVER_SRE = 2.5  # requested default
+    
+    def _on_change_sre(sre_key: str, factor_key: str, env_key: str) -> None:
+        sre = float(st.session_state.get(sre_key) or 0.0)
+        factor = float(st.session_state.get(factor_key) or DEFAULT_ATH_OVER_SRE)
+        if sre > 0.0:
+            st.session_state[env_key] = float(factor * sre)
+    
+    def _on_change_factor(sre_key: str, factor_key: str, env_key: str) -> None:
+        sre = float(st.session_state.get(sre_key) or 0.0)
+        factor = float(st.session_state.get(factor_key) or DEFAULT_ATH_OVER_SRE)
+        if sre > 0.0:
+            st.session_state[env_key] = float(factor * sre)
+    
+    def _on_change_env(sre_key: str, factor_key: str, env_key: str) -> None:
+        sre = float(st.session_state.get(sre_key) or 0.0)
+        env = float(st.session_state.get(env_key) or 0.0)
+        if sre > 0.0:
+            st.session_state[factor_key] = float(env / sre)
 
-    if st.button("➕ Ajouter un bâtiment"):
+    if st.button("➕ Add a building"):
         batiments.append({"nom": "", "adresse": "", "ouvrages": []})
 
     if not batiments:
-        st.info("Aucun bâtiment défini.")
+        st.info("No building defined.")
         return
 
     for bi, bat in enumerate(batiments):
-        with st.expander(f"Bâtiment {bi+1} – {bat.get('nom') or '(sans nom)'}", expanded=True):
+        with st.expander(f"Building {bi+1} – {bat.get('nom') or '(unnamed)'}", expanded=True):
             col1, col2 = st.columns([3, 1])
 
             # =========================
             # COLONNE 1 : infos + PV
             # =========================
             with col1:
-                bat["nom"] = st.text_input("Nom du bâtiment", value=bat.get("nom", ""), key=f"bat_nom_{bi}")
+                bat["nom"] = st.text_input("Building name", value=bat.get("nom", ""), key=f"bat_nom_{bi}")
                 # -------------------------
                 # Adresse + autocomplete (geo.admin)
                 # -------------------------
                 bat.setdefault("geo", {})  # {x,y,sr,label}
                 addr_query = st.text_input(
-                    "Adresse",
+                    "Address",
                     value=bat.get("adresse", ""),
                     key=f"bat_adresse_{bi}",
-                    help="Tapez quelques caractères pour obtenir des suggestions (geo.admin).",
+                    help="Type a few characters to get suggestions (geo.admin).",
                 )
                 bat["adresse"] = addr_query
                 
@@ -299,25 +389,25 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                 try:
                     suggestions = search_addresses(addr_query, limit=8, lang="fr", sr=2056) if len((addr_query or "").strip()) >= 3 else []
                 except Exception as e:
-                    st.caption(f"⚠️ Autocomplete adresse indisponible: {e}")
+                    st.caption(f"⚠️ Address autocomplete unavailable: {e}")
                     suggestions = []
                 
                 if suggestions:
                     labels = [s["label"] for s in suggestions]
                     sel = st.selectbox(
-                        "Suggestions d’adresses (geo.admin)",
+                        "Address suggestions (geo.admin)",
                         options=[""] + labels,
                         index=0,
                         key=f"bat_adresse_suggest_{bi}",
-                        help="Sélectionnez une suggestion puis cliquez sur 'Utiliser'.",
+                        help="Select a suggestion then click 'Use'.",
                     )
                 
                     c1, c2 = st.columns([1, 2])
                     with c1:
-                        use_sel = st.button("✅ Utiliser", key=f"bat_adresse_use_{bi}")
+                        use_sel = st.button("✅ Use", key=f"bat_adresse_use_{bi}")
                     with c2:
                         if bat.get("geo") and bat["geo"].get("x") and bat["geo"].get("y"):
-                            st.caption(f"Coordonnées (LV95): x={bat['geo'].get('x'):.1f}, y={bat['geo'].get('y'):.1f}")
+                            st.caption(f"Coordinates (LV95): x={bat['geo'].get('x'):.1f}, y={bat['geo'].get('y'):.1f}")
                 
                     if use_sel and sel:
                         chosen = next((s for s in suggestions if s.get("label") == sel), None)
@@ -336,11 +426,11 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                 bat.setdefault("pv_roofs", [])                    # liste de pans importés
                 bat.setdefault("pv_roof_feature_id_input", "")    # input texte
 
-                st.markdown("### ☀️ Photovoltaïque du bâtiment")
+                st.markdown("### ☀️ Building photovoltaics")
 
                 # radio -> stockage bool
                 choice = st.radio(
-                    "Avez-vous déjà du PV sur ce bâtiment ?",
+                    "Do you already have PV on this building?",
                     options=["(choisir)", "Oui", "Non", "Partiellement"],
                     index=["(choisir)", "Oui", "Non", "Partiellement"].index(
                         "Oui" if bat.get("pv_exists") is True else
@@ -349,6 +439,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                         "(choisir)"
                     ),
                     key=f"bat_pv_exists_{bi}",
+                    format_func=_ui_opt_label,
                 )
                 
                 if choice == "Oui":
@@ -364,7 +455,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                     # ==========================================================
                     # 🔋 Batterie proposée (PV-only)
                     # ==========================================================
-                    st.markdown("#### 🔋 Batterie proposée (basée sur le PV proposé)")
+                    st.markdown("#### 🔋 Proposed battery (based on proposed PV)")
                     
                     # TODO ARCHI (future) :
                     # Aujourd'hui l'UX batterie est placée sous PV pour simplifier le cas d'usage
@@ -382,7 +473,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
 
                     
                     bat["pv_battery_proposed"]["enabled"] = st.checkbox(
-                        "Ajouter une batterie électrique proposée (PV-only)",
+                        "Add a proposed electrical battery (PV-only)",
                         value=bool(bat["pv_battery_proposed"].get("enabled", False)),
                         key=f"bat_pv_batt_enable_{bi}",
                         help="Batterie proposée uniquement pour augmenter l’autoconsommation du PV proposé. "
@@ -395,29 +486,31 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                         # Cache session pour éviter de relire à chaque rerun
                         if "_storage_techs_elec" not in st.session_state:
                             try:
-                                st.session_state["_storage_techs_elec"] = load_storage_technologies("Electrique")
+                                st.session_state["_storage_techs_elec"] = load_storage_technologies("Electric")
                             except Exception as e:
-                                st.error(f"Impossible de charger les technologies de stockage électrique : {e}")
+                                st.error(f"Unable to load electrical storage technologies: {e}")
                                 st.stop()
                     
                         storage_techs = st.session_state["_storage_techs_elec"]
                         if not storage_techs:
-                            st.error("Aucune technologie trouvée dans electricity_storage.xlsx (stockage électrique).")
+                            st.error("No technology found in electricity_storage.xlsx (electrical storage).")
                             st.stop()
                     
                         techno_names = list(storage_techs.keys())
                         bat["pv_battery_proposed"].setdefault("techno", "Battery Li-ion" if "Battery Li-ion" in techno_names else techno_names[0])
-                        #TODO gérer ça en foncton de Critère prioritaire dans ⚙️ Paramétrage simulation
+                        #TODO gérer ça en foncton de Priority criterion dans ⚙️ Paramétrage simulation
                         bat["pv_battery_proposed"]["techno"] = st.selectbox(
-                            "Technologie batterie (Excel : electricity_storage.xlsx)",
+                            "Battery technology (Excel: electricity_storage.xlsx)",
                             options=techno_names,
                             index=techno_names.index(bat["pv_battery_proposed"]["techno"]) if bat["pv_battery_proposed"]["techno"] in techno_names else 0,
                             key=f"bat_pv_batt_techno_{bi}",
                         )
-                    
+                        selected_techno = (bat["pv_battery_proposed"].get("techno") or "").strip()
+                        is_evolium = (selected_techno.lower() == "battery evolium")
+
                         # Mapping techno -> engine (optionnel mais utile)
                         bat["pv_battery_proposed"]["engine"] = infer_engine_from_type_and_techno(
-                            "Electrique", bat["pv_battery_proposed"]["techno"]
+                            "Electric", bat["pv_battery_proposed"]["techno"]
                         )
                     
                         # Param techno (pour affichage)
@@ -428,60 +521,135 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                             for k in keys:
                                 if k in tech_params:
                                     try:
-                                        return float(tech_params[k].get("valeur"))
+                                        return float(tech_params[k].get("Values"))
                                     except Exception:
                                         pass
                             if required:
-                                raise ValueError(f"Paramètre techno manquant ou non numérique: {keys}")
+                                raise ValueError(f"Missing or non-numeric technology parameter: {keys}")    
+
                             return None
                     
                         # Lire paramètres indispensables (pas de fallback silencieux)
                         try:
                             capex_chf_kwh = _tech_num(["Capex", "CAPEX", "CAPEX [CHF/kWh]", "CAPEX_CHF_per_kWh"])
-                            opex_chf_yr = _tech_num(["Opex", "OPEX", "OPEX [CHF/an]", "OPEX_CHF_per_year"])
-                            lifetime_yr = _tech_num(["Durée de vie", "Lifetime", "Lifetime [an]", "lifetime_years"])
-                            eta_global = _tech_num(["Rendement", "Efficiency", "Efficiency [-]"], required=True)
-                            e_min_kwh = _tech_num(["Capacité min", "Capacité min [kWh]", "E_min_kWh"])
-                            e_max_kwh = _tech_num(["Capacité max", "Capacité max [kWh]", "E_max_kWh"])
-                            c_rate_ch = _tech_num(["C-rate charge max.", "C-rate charge", "C_rate_charge_max"])
-                            c_rate_dis = _tech_num(["C-rate décharge max.", "C-rate décharge", "C_rate_discharge_max"])
-                            volume_density = _tech_num(["Densité"])
-                            CO2_rate = _tech_num(["Emission de CO2"])
+                            opex_chf_yr   = _tech_num(["Opex", "OPEX", "OPEX [CHF/an]", "OPEX [CHF/year]", "OPEX_CHF_per_year"])
+                            lifetime_yr   = _tech_num(["Durée de vie", "Lifetime", "Lifetime [an]", "Lifetime [years]", "lifetime_years"])
+                            
+                            eta_global    = _tech_num(["Rendement", "Efficiency", "Efficiency [-]"], required=True)
+                            
+                            # min/max requis pour les technos packables, mais pas pour Evolium (capacité fixe)
+                            e_min_kwh = _tech_num(
+                                ["Capacité min", "Capacité min [kWh]", "E_min_kWh", "Min capacity", "Min capacity [kWh]"],
+                                required=(not is_evolium)
+                            )
+                            e_max_kwh = _tech_num(
+                                ["Capacité max", "Capacité max [kWh]", "E_max_kWh", "Max capacity", "Max capacity [kWh]"],
+                                required=(not is_evolium)
+                            )
+                            
+                            c_rate_ch  = _tech_num(["C-rate charge max.", "C-rate charge", "C_rate_charge_max", "Max charge C-rate"])
+                            c_rate_dis = _tech_num(["C-rate décharge max.", "C-rate décharge", "C_rate_discharge_max", "Max discharge C-rate"])
+                            
+                            volume_density = _tech_num(["Densité", "Density", "Energy density"])
+                            CO2_rate       = _tech_num(["Emission de CO2", "Emission de CO₂", "CO2 emissions", "CO2", "CO2 emission"])
+                            
+                            soc_max_pct = _tech_num(["SoC max", "SOC max", "SOC_MAX", "SoC max [%]"])
+                            soc_min_pct = _tech_num(["SoC min", "SOC min", "SOC_MIN", "SoC min [%]"])
+                            
+                            cap_fixed_kwh = _tech_num(["Capacité", "Capacité [kWh]", "Capacity", "Capacity [kWh]"], required=False)
+
+
+                            is_fixed_capacity = False
+
+                            if is_evolium:
+                                if cap_fixed_kwh is None:
+                                    raise ValueError("Evolium: missing Excel parameter 'Capacité' in electricity_storage.xlsx.")
+                                cap_fixed_kwh = float(cap_fixed_kwh)
+                                if cap_fixed_kwh <= 0:
+                                    raise ValueError("Evolium: Excel parameter 'Capacité' must be > 0.")
+                                is_fixed_capacity = True
+                            
+                                # For Evolium: derive min/max from fixed capacity (for downstream UI compatibility)
+                                e_min_kwh = float(cap_fixed_kwh)
+                                e_max_kwh = float(cap_fixed_kwh)
+
+
+
+
                         except Exception as e:
-                            st.error(f"Techno batterie incomplète dans Excel : {e}")
+                            st.error(f"Battery technology is incomplete in the Excel file: {e}")
                             st.stop()
+
                     
                         show_tech = st.checkbox(
-                            "🔍 Afficher paramètres techno batterie (extraits Excel)",
+                            "🔍 Show battery tech parameters (from Excel)",
                             value=False,
                             key=f"bat_batt_show_tech_{bi}",
                         )
+
                         
                         if show_tech:
-                            st.write(f"CAPEX : {capex_chf_kwh:.1f} CHF/kWh")
-                            st.write(f"OPEX : {opex_chf_yr:.1f} CHF/an")
-                            st.write(f"Lifetime : {lifetime_yr:.1f} ans")
-                            st.write(f"Rendement global : {eta_global:.3f} [-]")
-                            st.write(f"Capacité min/max : {e_min_kwh:.1f} / {e_max_kwh:.1f} kWh")
-                            st.write(f"C-rate charge/décharge : {c_rate_ch:.3f} / {c_rate_dis:.3f} kW/kWh")
+                            st.write(f"CAPEX: {capex_chf_kwh:.1f} CHF/kWh")
+                            st.write(f"OPEX: {opex_chf_yr:.1f} CHF/year")
+                            st.write(f"Lifetime: {lifetime_yr:.1f} years")
+                            st.write(f"Overall efficiency: {eta_global:.3f} [-]")
+                            st.write(f"Min/Max capacity: {e_min_kwh:.1f} / {e_max_kwh:.1f} kWh")
+                            st.write(f"C-rate (charge/discharge): {c_rate_ch:.3f} / {c_rate_dis:.3f} kW/kWh")
+
 
                     
                         # --- Méthode de sizing ---
                         bat["pv_battery_proposed"].setdefault("sizing", {})
                         bat["pv_battery_proposed"]["sizing"].setdefault("method", "heuristic")
-                    
-                        method = st.radio(
-                            "Méthode de dimensionnement",
-                            options=["heuristic", "manual"],
-                            format_func=lambda x: "Heuristique (autoconsommation PV)" if x == "heuristic" else "Manuel",
-                            index=0 if bat["pv_battery_proposed"]["sizing"].get("method") != "manual" else 1,
-                            key=f"bat_pv_batt_sizing_method_{bi}",
-                        )
+
+                        # Valeur par défaut sûre (toujours définie)
+                        method = (bat["pv_battery_proposed"]["sizing"].get("method") or "heuristic")
+
+                        # Evolium : capacité fixe + 1 unité -> méthode manual imposée
+                        if is_evolium:
+                            bat["pv_battery_proposed"]["sizing"]["method"] = "manual"
+                            bat["pv_battery_proposed"]["sizing"]["capacity_total_kwh"] = float(cap_fixed_kwh)
+
+                            st.info(
+                                f"Evolium: fixed capacity from Excel = {float(cap_fixed_kwh):.1f} kWh. "
+                                "Manual sizing enforced (single battery)."
+                            )
+                            method = "manual"
+
+                        # Autres technos : choix utilisateur
+                        else:
+                            method = st.radio(
+                                "Sizing method",
+                                options=["heuristic", "manual"],
+                                format_func=lambda x: "Heuristic (PV self-consumption)" if x == "heuristic" else "Manual",
+                                index=0 if method != "manual" else 1,
+                                key=f"bat_pv_batt_sizing_method_{bi}",
+                            )
+
                         bat["pv_battery_proposed"]["sizing"]["method"] = method
+
+
                     
-                        # SOC (hardcodé dans ton moteur aujourd'hui, mais on le stocke pour traçabilité)
-                        bat["pv_battery_proposed"]["sizing"]["soc_min_frac"] = 0.20
-                        bat["pv_battery_proposed"]["sizing"]["soc_max_frac"] = 0.80
+                        # SOC: lu depuis Excel (en %) puis stocké en fraction pour le core
+                        soc_max_frac = float(soc_max_pct) / 100.0
+                        soc_min_frac = float(soc_min_pct) / 100.0
+                        
+                        # garde-fous stricts (pas de fallback silencieux)
+                        if not (0.0 <= soc_min_frac <= 1.0) or not (0.0 <= soc_max_frac <= 1.0):
+                            raise ValueError(
+                                f"SoC min/max out of bounds (expected as % in Excel). "
+                                f"Received: min={soc_min_pct}, max={soc_max_pct}"
+                            )
+                        if soc_min_frac >= soc_max_frac:
+                            raise ValueError(
+                                f"SoC min must be < SoC max. "
+                                f"Received: min={soc_min_pct}%, max={soc_max_pct}%"
+                            )
+
+                        
+                        bat["pv_battery_proposed"]["sizing"]["soc_min_frac"] = soc_min_frac
+                        bat["pv_battery_proposed"]["sizing"]["soc_max_frac"] = soc_max_frac
+
                     
                         if method == "heuristic":
                             # Paramètres heuristiques
@@ -489,32 +657,37 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                             bat["pv_battery_proposed"]["sizing"].setdefault("p_target_mode", "pv_installed")
                             bat["pv_battery_proposed"]["sizing"].setdefault("p_target_kw_override", None)
                     
-                            st.caption("Heuristique : capacité dimensionnée pour augmenter l’autoconsommation, "
-                                       "en tenant compte de la fenêtre SOC (20–80%) et du C-rate.")
+                            st.caption("Heuristic: capacity sized to increase self-consumption, "
+                                       "taking into account the SOC window (from Excel) and the C-rate.")
                     
                             bat["pv_battery_proposed"]["sizing"]["hours_target"] = float(st.number_input(
-                                "Durée cible (hours_target) [h]",
+                                "Target duration (hours_target) [h]",
                                 min_value=0.25,
                                 max_value=24.0,
                                 value=float(bat["pv_battery_proposed"]["sizing"].get("hours_target", 4.0)),
                                 step=0.25,
                                 key=f"bat_pv_batt_hours_target_{bi}",
-                                help="Interprétation : la batterie doit pouvoir restituer la puissance cible pendant cette durée "
-                                     "(hypothèse conservatrice hiver).",
+                                help="Interpretation: the battery should be able to deliver the target power for this duration "
+                                     "(conservative winter assumption).",
                             ))
                     
                         else:
-                            # Manuel : capacité totale imposée, Phase 2 n'aura plus qu'à simuler le dispatch
-                            bat["pv_battery_proposed"]["sizing"].setdefault("capacity_total_kwh", max(e_min_kwh, 5.0))
-                    
-                            bat["pv_battery_proposed"]["sizing"]["capacity_total_kwh"] = float(st.number_input(
-                                "Capacité totale batterie [kWh]",
-                                min_value=float(e_min_kwh),
-                                max_value=float(max(e_min_kwh, e_max_kwh * 50)),  # limite UI, le packing se fait en Phase 2
-                                value=float(bat["pv_battery_proposed"]["sizing"].get("capacity_total_kwh", max(e_min_kwh, 5.0))),
-                                step=1.0,
-                                key=f"bat_pv_batt_capacity_manual_{bi}",
-                            ))
+                            # Manual
+                            if is_evolium:
+                                # capacité fixe -> pas d’input
+                                bat["pv_battery_proposed"]["sizing"]["capacity_total_kwh"] = float(cap_fixed_kwh)
+                                st.write(f"Total battery capacity: **{float(cap_fixed_kwh):.1f} kWh** (fixed)")
+                            else:
+                                bat["pv_battery_proposed"]["sizing"].setdefault("capacity_total_kwh", max(e_min_kwh, 5.0))
+                                bat["pv_battery_proposed"]["sizing"]["capacity_total_kwh"] = float(st.number_input(
+                                    "Capacité totale batterie [kWh]",
+                                    min_value=float(e_min_kwh),
+                                    max_value=float(max(e_min_kwh, e_max_kwh * 50)),
+                                    value=float(bat["pv_battery_proposed"]["sizing"].get("capacity_total_kwh", max(e_min_kwh, 5.0))),
+                                    step=1.0,
+                                    key=f"bat_pv_batt_capacity_manual_{bi}",
+                                ))
+
                     
                         # --- Dispatch : PV-only strict (pour l'instant) ---
                         bat["pv_battery_proposed"].setdefault("dispatch", {})
@@ -522,7 +695,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                         bat["pv_battery_proposed"]["dispatch"]["allow_grid_charge"] = False
                         bat["pv_battery_proposed"]["dispatch"]["allow_grid_discharge"] = False
                     
-                        st.info("PV-only : la batterie se charge uniquement sur surplus PV et se décharge uniquement vers la charge (pas de réseau).")
+                        st.info("PV-only: the battery charges only from PV surplus and discharges only to the load (no grid interaction).")
                     
                         # Stocker aussi les bornes techno (utile en Phase 2 pour packing)
                         bat["pv_battery_proposed"].setdefault("tech_constraints", {})
@@ -535,22 +708,32 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                             "capex_chf_per_kwh": float(capex_chf_kwh),
                             "opex_chf_per_year": float(opex_chf_yr),
                             "lifetime_years": float(lifetime_yr),
+
+                            # CO2 embodied (from Excel techno)
+                            "embodied_factor_kg_per_kWhcap": float(CO2_rate),
+                        
+                            # (optionnel legacy, si tu veux garder compat)
+                            "co2_kg_per_kwhcap": float(CO2_rate),
+                        
+                            "soc_min_frac": float(soc_min_frac),
+                            "soc_max_frac": float(soc_max_frac),
+                            "fixed_capacity_kwh": (float(cap_fixed_kwh) if is_evolium else None),
                         }
 
                 
                 # --- Sonnendach seulement si PV = NON ---
                 if (bat.get("pv_exists") is False) or (bat.get("pv_exists") == "partial"):
-                    st.markdown("#### 🏠 Toiture (geo.admin / Sonnendach) – pour proposer une installation PV")
+                    st.markdown("#### 🏠 Roof (geo.admin / Sonnendach) — to propose a PV system")
                 
                     # --- Geo (LV95) depuis l’adresse sélectionnée ---
                     geo = bat.get("geo") or {}
                     has_xy = (geo.get("x") is not None) and (geo.get("y") is not None)
                 
                     if not has_xy:
-                        st.warning("Adresse non géocodée. Choisis une suggestion puis clique ✅ Utiliser.")
+                        st.warning("Address not geocoded. Select a suggestion then click ✅ Use.")
                     else:
                         st.caption(
-                            f"Adresse géocodée (LV95): x={float(geo['x']):.1f}, y={float(geo['y']):.1f}"
+                            f"Geocoded address (LV95): x={float(geo['x']):.1f}, y={float(geo['y']):.1f}"
                         )
                 
                     # --- Config PV proposé ---
@@ -559,7 +742,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                 
                     bat["pv_proposed_config"]["default_selfc_pct"] = (
                         st.slider(
-                            "Taux d’autoconsommation estimé pour le PV proposé [%]",
+                            "Estimated self-consumption for proposed PV [%]",
                             0, 100,
                             value=int(100 * float(default_selfc)),
                             step=1,
@@ -590,7 +773,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                     components.iframe(geo_admin_url, height=520, scrolling=True)
                 
                     bat["pv_roof_feature_id_input"] = st.text_input(
-                        "FeatureId (copier depuis geo.admin après avoir cliqué le pan de toiture)",
+                        "FeatureId (copy from geo.admin after clicking the roof face)",
                         value=bat.get("pv_roof_feature_id_input", ""),
                         key=f"bat_pv_roof_fid_{bi}",
                     )
@@ -599,24 +782,24 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                 
                     cbtn1, cbtn2, cbtn3 = st.columns([1, 1, 1])
                     with cbtn1:
-                        add_roof = st.button("➕ Ajouter", key=f"bat_pv_roof_add_{bi}")
+                        add_roof = st.button("➕ Add", key=f"bat_pv_roof_add_{bi}")
                     with cbtn2:
-                        clear_roofs = st.button("🧹 Vider", key=f"bat_pv_roof_clear_{bi}")
+                        clear_roofs = st.button("🧹 Clear", key=f"bat_pv_roof_clear_{bi}")
                     with cbtn3:
                         show_raw = st.checkbox("Debug attrs", value=False, key=f"bat_pv_roof_debug_{bi}")
                 
                     if clear_roofs:
                         bat["pv_roofs"] = []
-                        st.success("Liste des pans vidée.")
+                        st.success("Roof-face list cleared.")
                 
                     if add_roof:
                         if not fid.isdigit():
-                            st.warning("FeatureId invalide (doit être un nombre).")
+                            st.warning("Invalid FeatureId (must be a number).")
                         else:
                             fid_int = int(fid)
                             existing_ids = {r.get("feature_id") for r in bat.get("pv_roofs", [])}
                             if fid_int in existing_ids:
-                                st.info("Ce featureId est déjà dans la liste.")
+                                st.info("This FeatureId is already in the list.")
                             else:
                                 try:
                                     attrs = fetch_roof_by_feature_id(fid_int)
@@ -636,25 +819,25 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                 
                                         "_raw": attrs,
                                     })
-                                    st.success(f"Pan {fid_int} ajouté.")
+                                    st.success(f"Roof face {fid_int} added.")
                                 except Exception as e:
-                                    st.error(f"Erreur import toiture : {e}")
+                                    st.error(f"Roof import error: {e}")
                 
                     # ---- Affichage + édition ratio/surface utilisable ----
                     if bat.get("pv_roofs"):
-                        st.markdown("##### Pans de toiture ajoutés (avec surface utilisable)")
+                        st.markdown("##### Added roof faces (with usable surface)")
                 
                         # éditeur par pan (ratio)
                         for ri, roof in enumerate(bat["pv_roofs"]):
                             fid_i = roof.get("feature_id")
-                            st.markdown(f"**Pan {fid_i}**")
+                            st.markdown(f"**Roof face {fid_i}**")
                 
                             c1, c2, c3 = st.columns([1.4, 1, 1.2])
                             with c1:
-                                st.write(f"Surface geo.admin: **{float(roof.get('surface_m2') or 0):.1f} m²**")
+                                st.write(f"geo.admin surface: **{float(roof.get('surface_m2') or 0):.1f} m²**")
                             with c2:
                                 ratio = st.number_input(
-                                    "Part utilisable [-]",
+                                    "Usable share [-]",
                                     min_value=0.0,
                                     max_value=1.0,
                                     value=float(roof.get("ratio_usable", 0.75) or 0.75),
@@ -664,7 +847,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                                 roof["ratio_usable"] = ratio
                             with c3:
                                 roof["surface_usable_m2"] = float(roof.get("surface_m2") or 0.0) * float(ratio or 0.0)
-                                st.write(f"Surface utilisable: **{roof['surface_usable_m2']:.1f} m²**")
+                                st.write(f"Usable surface: **{roof['surface_usable_m2']:.1f} m²**")
                 
                         # tableau récap
                         df_roofs = pd.DataFrame(bat["pv_roofs"]).drop(columns=["_raw"], errors="ignore")
@@ -674,28 +857,28 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                         del_col1, del_col2 = st.columns([2, 1])
                         with del_col1:
                             to_del = st.selectbox(
-                                "Supprimer un pan (featureId)",
+                                "Remove a roof face (featureId)",
                                 options=[r["feature_id"] for r in bat["pv_roofs"]],
                                 key=f"bat_roof_del_select_{bi}",
                             )
                         with del_col2:
-                            if st.button("🗑️ Supprimer ce pan", key=f"bat_roof_del_btn_{bi}"):
+                            if st.button("🗑️ Delete this roof face", key=f"bat_roof_del_btn_{bi}"):
                                 bat["pv_roofs"] = [r for r in bat["pv_roofs"] if r.get("feature_id") != to_del]
                                 st.rerun()
 
                 
                         if show_raw:
-                            st.markdown("##### Debug (attributs bruts du dernier pan)")
+                            st.markdown("##### Debug (raw attributes of the last roof face)")
                             st.json(bat["pv_roofs"][-1].get("_raw", {}))
                     else:
-                        st.info("Aucun pan de toiture ajouté.")
+                        st.info("Aucun pan de toiture added.")
 
 
             # =========================
             # COLONNE 2 : actions bâtiment
             # =========================
             with col2:
-                if st.button("🗑️ Supprimer ce bâtiment", key=f"bat_del_{bi}"):
+                if st.button("🗑️ Delete this building", key=f"bat_del_{bi}"):
                     batiments.pop(bi)
                     st.rerun()
 
@@ -707,15 +890,16 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
             bat["excel_data"] = bat.get("excel_data", {})
 
             bat["data_mode"] = st.radio(
-                "Source de données pour ce bâtiment :",
+                "Data source for this building:",
                 options=["Aucune", "Réutiliser fichier du projet", "Importer un fichier"],
                 index=["Aucune", "Réutiliser fichier du projet", "Importer un fichier"].index(bat["data_mode"]),
-                key=f"bat_data_mode_{bi}"
+                key=f"bat_data_mode_{bi}",
+                format_func=_ui_opt_label,
             )
 
             if bat["data_mode"] == "Importer un fichier":
                 bat_excel = st.file_uploader(
-                    "📥 Fichier Excel du bâtiment",
+                    "📥 Building Excel file",
                     type=["xlsx", "xls", "csv"],
                     key=f"bat_excel_{bi}"
                 )
@@ -724,9 +908,9 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                         sheets = load_excel_file(bat_excel)
                         bat["excel_data"]["file_name"] = bat_excel.name
                         bat["excel_data"]["sheets"] = sheets
-                        st.success(f"Fichier bâtiment chargé : {bat_excel.name}")
+                        st.success(f"Building file loaded: {bat_excel.name}")
                     except Exception as e:
-                        st.error(f"Erreur lors de l'import bâtiment : {e}")
+                        st.error(f"Building import error: {e}")
 
             elif bat["data_mode"] == "Réutiliser fichier du projet":
                 meta = st.session_state["phase1_data"]["meta"]
@@ -736,9 +920,9 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
             # Ouvrages (TOUJOURS)
             # =========================
             st.markdown("---")
-            st.markdown("##### Ouvrages de ce bâtiment")
+            st.markdown("##### Units in this building")
 
-            if st.button("➕ Ajouter un ouvrage", key=f"ouv_add_{bi}"):
+            if st.button("➕ Add a unit", key=f"ouv_add_{bi}"):
                 bat["ouvrages"].append({
                     "nom": "",
                     "type_usage": "",
@@ -751,46 +935,119 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
 
             ouvrages: List[Dict[str, Any]] = bat.get("ouvrages", [])
             if not ouvrages:
-                st.info("Aucun ouvrage pour ce bâtiment.")
+                st.info("No unit for this building.")
                 continue
 
             for oi, ouv in enumerate(ouvrages):
                 st.markdown("---")
-                st.markdown(f"#### 🧱 Ouvrage {oi+1} – {ouv.get('nom') or '(sans nom)'}")
+                st.markdown(f"#### 🧱 Unit {oi+1} – {ouv.get('nom') or '(unnamed)'}")
 
                 col_o1, col_o2 = st.columns([3, 1])
                 with col_o1:
-                    ouv["nom"] = st.text_input("Nom de l’ouvrage", ouv.get("nom", ""), key=f"ouv_nom_{bi}_{oi}")
+                    ouv["nom"] = st.text_input("Unit name", ouv.get("nom", ""), key=f"ouv_nom_{bi}_{oi}")
                     type_options = [
-                        "", "Habitat individuel", "Habitat collectif", "Commerce", "Administration",
-                        "Ecole", "Restauration", "Lieux de rassemblement", "Hôpitaux", "Industrie",
-                        "Dépôts", "Installations sportives", "Piscines couvertes"
+                        "",
+                        "residential_single",
+                        "residential_multi",
+                        "commerce",
+                        "administration",
+                        "school",
+                        "restaurant",
+                        "assembly",
+                        "hospital",
+                        "industry",
+                        "storage",
+                        "sports_facility",
+                        "indoor_pool",
                     ]
+
                     ouv["type_usage"] = st.selectbox(
-                        "Type d’usage",
+                        "Use type",
                         options=type_options,
                         index=type_options.index(ouv.get("type_usage", "")) if ouv.get("type_usage", "") in type_options else 0,
                         key=f"ouv_type_{bi}_{oi}"
                     )
+                    def _sync_ath_factor(sre_key: str, ath_key: str, fac_key: str, last_key: str) -> None:
+                        sre = float(st.session_state.get(sre_key) or 0.0)
+                        if sre <= 0:
+                            return
                     
-                    ouv["sre_m2"] = st.number_input(
-                        "SRE de l’ouvrage [m²]",
+                        last = st.session_state.get(last_key)
+                    
+                        # If user edited Ath last -> recompute factor
+                        if last == "ath":
+                            ath = float(st.session_state.get(ath_key) or 0.0)
+                            st.session_state[fac_key] = ath / sre if sre > 0 else 2.5
+                    
+                        # If user edited factor last -> recompute Ath
+                        elif last == "fac":
+                            fac = float(st.session_state.get(fac_key) or 2.5)
+                            st.session_state[ath_key] = fac * sre
+                    
+                        # Default behavior (e.g., just changed SRE) -> keep factor, recompute Ath
+                        else:
+                            fac = float(st.session_state.get(fac_key) or 2.5)
+                            st.session_state[ath_key] = fac * sre
+
+                                       # Keys for session_state sync
+                    sre_key = f"ouv_sre_{bi}_{oi}"
+                    factor_key = f"ouv_env_factor_{bi}_{oi}"
+                    env_key = f"ouv_env_{bi}_{oi}"
+
+                    # Init defaults in session_state (only once per key)
+                    if factor_key not in st.session_state:
+                        st.session_state[factor_key] = float(ouv.get("ath_over_sre_factor") or 2.5)
+
+                    if env_key not in st.session_state:
+                        st.session_state[env_key] = float(ouv.get("surface_enveloppe_m2") or 0.0)
+
+                    # --- SRE input (drives A_th update) ---
+                    st.number_input(
+                        "Unit SRE [m²]",
                         min_value=0.0,
                         value=float(ouv.get("sre_m2") or 0.0),
                         step=10.0,
-                        key=f"ouv_sre_{bi}_{oi}"
-                    )
-                    ouv["surface_enveloppe_m2"] = st.number_input(
-                        "Surface d’enveloppe thermique [m²] (facultatif)",
-                        min_value=0.0,
-                        value=float(ouv.get("surface_enveloppe_m2") or 0.0),
-                        step=10.0,
-                        key=f"ouv_env_{bi}_{oi}"
+                        key=sre_key,
+                        on_change=_on_change_sre,
+                        args=(sre_key, factor_key, env_key),
                     )
 
+                    # Auto-fill A_th the first time SRE is introduced (if still empty)
+                    if float(st.session_state.get(sre_key) or 0.0) > 0.0 and float(st.session_state.get(env_key) or 0.0) == 0.0:
+                        _on_change_sre(sre_key, factor_key, env_key)
+
+                    # --- Factor + A_th (bidirectional) ---
+                    col_env1, col_env2 = st.columns([1, 1])
+
+                    with col_env1:
+                        st.number_input(
+                            "A_th / SRE factor (default 2.5)",
+                            min_value=0.0,
+                            value=float(st.session_state.get(factor_key) or 2.5),
+                            step=0.1,
+                            key=factor_key,
+                            on_change=_on_change_factor,
+                            args=(sre_key, factor_key, env_key),
+                        )
+
+                    with col_env2:
+                        st.number_input(
+                            "Thermal envelope area A_th [m²] (auto)",
+                            min_value=0.0,
+                            value=float(st.session_state.get(env_key) or 0.0),
+                            step=10.0,
+                            key=env_key,
+                            on_change=_on_change_env,
+                            args=(sre_key, factor_key, env_key),
+                        )
+
+                    # Write back to the ouvrage dict (source for project JSON)
+                    ouv["sre_m2"] = float(st.session_state.get(sre_key) or 0.0)
+                    ouv["ath_over_sre_factor"] = float(st.session_state.get(factor_key) or 0.0)
+                    ouv["surface_enveloppe_m2"] = float(st.session_state.get(env_key) or 0.0)
 
                 with col_o2:
-                    if st.button("🗑️ Supprimer cet ouvrage", key=f"ouv_del_{bi}_{oi}"):
+                    if st.button("🗑️ Delete this unit", key=f"ouv_del_{bi}_{oi}"):
                         ouvrages.pop(oi)
                         st.rerun()
 
@@ -800,22 +1057,23 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                 ouv["excel_data"] = ouv.get("excel_data", {})
 
                 ouv["data_mode"] = st.radio(
-                    "Source de données de l’ouvrage :",
+                    "Unit data source:",
                     options=["Aucune", "Réutiliser fichier du bâtiment", "Réutiliser fichier du projet", "Importer un fichier"],
                     index=["Aucune", "Réutiliser fichier du bâtiment", "Réutiliser fichier du projet", "Importer un fichier"].index(ouv["data_mode"]),
-                    key=f"ouv_data_mode_{bi}_{oi}"
+                    key=f"ouv_data_mode_{bi}_{oi}",
+                    format_func=_ui_opt_label,
                 )
 
                 if ouv["data_mode"] == "Importer un fichier":
-                    uploaded = st.file_uploader("Importer un fichier Excel/CSV", type=["xlsx", "xls", "csv"], key=f"ouv_excel_{bi}_{oi}")
+                    uploaded = st.file_uploader("Upload an Excel/CSV file", type=["xlsx", "xls", "csv"], key=f"ouv_excel_{bi}_{oi}")
                     if uploaded:
                         try:
                             sheets = load_excel_file(uploaded)
                             ouv["excel_data"]["file_name"] = uploaded.name
                             ouv["excel_data"]["sheets"] = sheets
-                            st.success(f"Fichier ouvrage chargé : {uploaded.name}")
+                            st.success(f"Unit file loaded: {uploaded.name}")
                         except Exception as e:
-                            st.error(f"Erreur lors de la lecture du fichier : {e}")
+                            st.error(f"Error while reading file: {e}")
 
                 elif ouv["data_mode"] == "Réutiliser fichier du bâtiment":
                     ouv["excel_data"] = bat.get("excel_data", {})
@@ -830,7 +1088,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                     sheet_names = list(sheets.keys())
                     selected_sheet = ouv.get("excel_sheet_name", sheet_names[0])
                     selected_sheet = st.selectbox(
-                        "Feuille Excel à utiliser pour cet ouvrage",
+                        "Excel sheet to use for this unit",
                         options=sheet_names,
                         index=sheet_names.index(selected_sheet) if selected_sheet in sheet_names else 0,
                         key=f"ouv_sheet_{bi}_{oi}"
@@ -846,7 +1104,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                                 errors="coerce"
                             )
                  
-                    st.caption(f"Aperçu de **{selected_sheet}**")
+                    st.caption(f"Preview of **{selected_sheet}**")
                     st.dataframe(df.head())
                     
                     cols = df.columns.tolist()
@@ -854,7 +1112,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
 
                     # --- Sélection des colonnes de base ---
                     ouv["time_col"] = st.selectbox(
-                        "Colonne de temps",
+                        "Time column",
                         options=cols,
                         index=cols.index(ouv.get("time_col", cols[0])) if ouv.get("time_col") in cols else 0,
                         key=f"time_col_{bi}_{oi}"
@@ -865,7 +1123,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                     current_elec = ouv.get("conso_elec_col")
                     elec_index = elec_options.index(current_elec) if current_elec in cols else 0
                     selected_elec = st.selectbox(
-                        "Colonne de consommation électrique [kWh]",
+                        "Electricity consumption column [kWh]",
                         options=elec_options,
                         index=elec_index,
                         key=f"conso_elec_col_{bi}_{oi}",
@@ -877,7 +1135,7 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                     current_th = ouv.get("conso_th_col")
                     th_index = th_options.index(current_th) if current_th in cols else 0
                     selected_th = st.selectbox(
-                        "Colonne de consommation thermique [kWh]",
+                        "Thermal consumption column [kWh]",
                         options=th_options,
                         index=th_index,
                         key=f"conso_th_col_{bi}_{oi}",
@@ -892,9 +1150,9 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
 
                         if time_col and (conso_elec_col or conso_th_col):
                             fig = go.Figure()
-
+                        
                             x_raw = df[time_col]
-
+                        
                             # Reconstruction d'une date si "Mois" + "Annee"
                             if time_col.lower().startswith("mois") and "Annee" in df.columns:
                                 x = pd.to_datetime(
@@ -903,43 +1161,47 @@ def page_batiments_ouvrages(data: Dict[str, Any]):
                                     errors="coerce"
                                 )
                             else:
-                                x = pd.to_datetime(x_raw, errors="ignore")
-
+                                try:
+                                    x = pd.to_datetime(x_raw)
+                                except Exception:
+                                    x = x_raw
+                        
                             if conso_elec_col and conso_elec_col in df.columns:
                                 fig.add_trace(go.Scatter(
                                     x=x,
                                     y=pd.to_numeric(df[conso_elec_col], errors="coerce"),
                                     mode="lines",
-                                    name=f"Conso élec – {conso_elec_col}",
+                                    name=f"Electricity consumption — {conso_elec_col}",
                                     fill="tozeroy",
                                 ))
-
+                        
                             if conso_th_col and conso_th_col in df.columns:
                                 fig.add_trace(go.Scatter(
                                     x=x,
                                     y=pd.to_numeric(df[conso_th_col], errors="coerce"),
                                     mode="lines",
-                                    name=f"Conso th – {conso_th_col}",
+                                    name=f"Thermal consumption — {conso_th_col}",
                                     fill="tozeroy",
                                 ))
+
 
                             if fig.data:
                                 fig.update_layout(
                                     height=300,
                                     margin=dict(l=40, r=20, t=10, b=40),
-                                    xaxis_title="Temps",
-                                    yaxis_title="Puissance / Énergie",
+                                    xaxis_title="Time",
+                                    yaxis_title="Power / Energy",
                                     hovermode="x unified",
                                 )
                                 st.plotly_chart(fig, use_container_width=True)
                             else:
-                                st.info("Aucune colonne de consommation valide sélectionnée pour le graphique.")
+                                st.info("No valid consumption column selected for the chart.")
                         else:
-                            st.info("Sélectionne la colonne de temps et au moins une colonne de consommation pour le graphique.")
+                            st.info("Select a time column and at least one consumption column to display the chart.")
                     except Exception as e:
-                        st.warning(f"Erreur d'affichage du graphique : {e}")
+                        st.warning(f"Chart display error: {e}")
                 else:
-                    st.info("Aucune donnée Excel chargée pour cet ouvrage.")
+                    st.info("No Excel data loaded for this unit.")
                     
                 render_producteurs(
                     bi, oi, ouv,
@@ -963,20 +1225,24 @@ def _ensure_params_initialized(data: Dict[str, Any]) -> Dict[str, Any]:
 
     # Defaults JSON (doivent exister même si ancien projet)
     # (repris tel quel — pas de nouvelles valeurs)
-    params.setdefault("pas_temps", "Horaire")
-    params.setdefault("duree_simulation_ans", 25)
-    params.setdefault("horizon_analyse_ans", 25)
-    params.setdefault("methode_optimisation", "Aucune (simulation simple)")
-    params.setdefault("critere_prioritaire", "Équilibré")
+    params.setdefault("Timestep", "Hourly")
+    params.setdefault("simulation_duration_years", 25)
+    params.setdefault("analysis_horizon_years", 25)
+    params.setdefault("optimisation_method", "None (simple simulation)")
+    params.setdefault("priority_criterion", "Balanced")
     params.setdefault("price_buy_chf_kwh", 0.25)
     params.setdefault("price_sell_chf_kwh", 0.06)
+    # 🌿 CO₂ (Scope 2 electricity) — provided in Phase 1 (no hardcoding in core)
+    params.setdefault("grid_import_factor_kg_per_kWh", 0.125)  # default suggested value (KBOB CH mix)
+
+
 
     data["params"] = params
     data["simu_params"] = data["params"]  # compat temporaire
     return params
 
 def page_simu_params(data: Dict[str, Any]):
-    st.header("⚙️ Paramétrage de la simulation")
+    st.header("⚙️ Simulation settings")
     
     # ----------------------------------------------------------
     # ✅ Source de vérité: data["params"]
@@ -990,73 +1256,74 @@ def page_simu_params(data: Dict[str, Any]):
     # ----------------------------------------------------------
     # Defaults JSON (doivent exister même si ancien projet)
     # ----------------------------------------------------------
-    params.setdefault("pas_temps", "Horaire")
-    params.setdefault("duree_simulation_ans", 25)
-    params.setdefault("horizon_analyse_ans", 25)
-    params.setdefault("methode_optimisation", "Aucune (simulation simple)")
-    params.setdefault("critere_prioritaire", "Équilibré")
+    params.setdefault("Timestep", "Hourly")
+    params.setdefault("simulation_duration_years", 25)
+    params.setdefault("analysis_horizon_years", 25)
+    params.setdefault("optimisation_method", "None (simple simulation)")
+    params.setdefault("priority_criterion", "Balanced")
     params.setdefault("price_buy_chf_kwh", 0.25)
     params.setdefault("price_sell_chf_kwh", 0.06)
+    params.setdefault("grid_import_factor_kg_per_kWh", 0.125)
 
     # ----------------------------------------------------------
     # Pas de temps
     # ----------------------------------------------------------
-    params["pas_temps"] = st.selectbox(
-        "Pas de temps",
-        ["Horaire", "15 min", "Journalier", "Saisonnier"],
-        index=["Horaire", "15 min", "Journalier", "Saisonnier"].index(
-            params.get("pas_temps", "Horaire")
-        ) if params.get("pas_temps") in ["Horaire", "15 min", "Journalier", "Saisonnier"] else 0,
+    params["Timestep"] = st.selectbox(
+        "Time step",
+        ["Hourly", "15 min", "Daily", "Monthly", "Seasonal"],
+        index=["Hourly", "15 min", "Daily", "Monthly", "Seasonal"].index(
+            params.get("Timestep", "Hourly")
+        ) if params.get("Timestep") in ["Hourly", "15 min", "Daily", "Monthly", "Seasonal"] else 0,
     )
 
 
     # ----------------------------------------------------------
     # Durées (source de vérité = params)
     # ----------------------------------------------------------
-    params.setdefault("duree_simulation_ans", 25)
-    params.setdefault("horizon_analyse_ans", 25)
+    params.setdefault("simulation_duration_years", 25)
+    params.setdefault("analysis_horizon_years", 25)
    
     # Key de projet pour éviter que Streamlit recycle l'ancien session_state
     meta = data.get("meta") or {}
-    proj_key = str(meta.get("nom_projet") or "__no_name__").strip()
+    proj_key = str(meta.get("Project_name") or "__no_name__").strip()
    
-    k_duree = f"{proj_key}__k_duree_simulation_ans"
-    k_horizon = f"{proj_key}__k_horizon_analyse_ans"
+    k_duree = f"{proj_key}__k_simulation_duration_years"
+    k_horizon = f"{proj_key}__k_analysis_horizon_years"
    
     col1, col2 = st.columns(2)
     with col1:
         duree = st.slider(
-            "Durée de la simulation [années]",
+            "Simulation duration [years]",
             min_value=1,
             max_value=30,
-            value=int(params.get("duree_simulation_ans", 25)),
+            value=int(params.get("simulation_duration_years", 25)),
             step=1,
             key=k_duree,
         )
     with col2:
         horizon = st.slider(
-            "Horizon d’analyse [années]",
+            "Analysis horizon [years]",
             min_value=1,
             max_value=50,
-            value=int(params.get("horizon_analyse_ans", 25)),
+            value=int(params.get("analysis_horizon_years", 25)),
             step=1,
             key=k_horizon,
         )
    
     # Sync vers params (JSON)
-    params["duree_simulation_ans"] = int(duree)
-    params["horizon_analyse_ans"] = int(horizon)
+    params["simulation_duration_years"] = int(duree)
+    params["analysis_horizon_years"] = int(horizon)
 
 
    # ----------------------------------------------------------
     # 💰 Prix électricité (utilisés par PV + batterie)
     # ----------------------------------------------------------
-    st.subheader("💰 Prix de l’électricité")
+    st.subheader("💰 Electricity prices")
     
     col3, col4 = st.columns(2)
     with col3:
         params["price_buy_chf_kwh"] = st.number_input(
-            "Prix achat électricité [CHF/kWh]",
+            "Electricity purchase price [CHF/kWh]",
             min_value=0.0,
             value=float(params.get("price_buy_chf_kwh", 0.25)),
             step=0.01,
@@ -1065,40 +1332,53 @@ def page_simu_params(data: Dict[str, Any]):
         )
     with col4:
         params["price_sell_chf_kwh"] = st.number_input(
-            "Prix vente / rétribution [CHF/kWh]",
+            "Sell-back / feed-in price [CHF/kWh]",
             min_value=0.0,
             value=float(params.get("price_sell_chf_kwh", 0.06)),
             step=0.01,
             format="%.3f",
             key="k_price_sell_chf_kwh",
         )
-
+        
+    # ----------------------------------------------------------
+    # 🌿 CO₂ — Electricity (Scope 2)
+    # ----------------------------------------------------------
+    st.subheader("🌿 CO₂ — Electricity (Scope 2)")
+    
+    params["grid_import_factor_kg_per_kWh"] = st.number_input(
+        "Electricity grid CO₂ factor [kgCO₂e/kWh]",
+        min_value=0.0,
+        value=float(params.get("grid_import_factor_kg_per_kWh", 0.125)),
+        step=0.001,
+        format="%.3f",
+        key="k_grid_import_factor_kg_per_kwh",
+    )
 
     # ----------------------------------------------------------
     # Optimisation
     # ----------------------------------------------------------
-    params["methode_optimisation"] = st.selectbox(
-        "Méthode d’optimisation",
+    params["optimisation_method"] = st.selectbox(
+        "Optimisation method",
         [
-            "Aucune (simulation simple)", "Optimisation coûts", "Optimisation CO₂",
-            "Optimisation exergie", "Optimisation multi-critères"
+            "None (simple simulation)", "Cost optimisation", "CO₂ optimisation",
+            "Exergy optimisation", "Optimisation multi-critères"
         ],
         index=[
-            "Aucune (simulation simple)", "Optimisation coûts", "Optimisation CO₂",
-            "Optimisation exergie", "Optimisation multi-critères"
-        ].index(params.get("methode_optimisation", "Aucune (simulation simple)"))
-        if params.get("methode_optimisation") in [
-            "Aucune (simulation simple)", "Optimisation coûts", "Optimisation CO₂",
-            "Optimisation exergie", "Optimisation multi-critères"
+            "None (simple simulation)", "Cost optimisation", "CO₂ optimisation",
+            "Exergy optimisation", "Optimisation multi-critères"
+        ].index(params.get("optimisation_method", "None (simple simulation)"))
+        if params.get("optimisation_method") in [
+            "None (simple simulation)", "Cost optimisation", "CO₂ optimisation",
+            "Exergy optimisation", "Optimisation multi-critères"
         ]
         else 0,
     )
 
-    params["critere_prioritaire"] = st.selectbox(
-        "Critère prioritaire",
-        ["Énergie", "Finances", "CO₂", "Exergie", "Équilibré"],
-        index=["Énergie", "Finances", "CO₂", "Exergie", "Équilibré"].index(params.get("critere_prioritaire", "Équilibré"))
-        if params.get("critere_prioritaire") in ["Énergie", "Finances", "CO₂", "Exergie", "Équilibré"]
+    params["priority_criterion"] = st.selectbox(
+        "Priority criterion",
+        ["Énergie", "Finances", "CO₂", "Exergie", "Balanced"],
+        index=["Énergie", "Finances", "CO₂", "Exergie", "Balanced"].index(params.get("priority_criterion", "Balanced"))
+        if params.get("priority_criterion") in ["Énergie", "Finances", "CO₂", "Exergie", "Balanced"]
         else 4,
     )
 
@@ -1112,44 +1392,58 @@ def page_simu_params(data: Dict[str, Any]):
 # ========== PAGE VALIDATION ==========
 
 def page_validation(data: Dict[str, Any]):
-    st.header("Validation du projet et passage à la Phase 2")
+    st.header("Project validation and move to Phase 2")
 
     meta = data["meta"]
     bats = data["batiments"]
     params = _ensure_params_initialized(data)
 
 
-    st.subheader("Résumé du projet")
-    st.write("Nom du projet :", meta.get("nom_projet", ""))
-    st.write("Commune :", meta.get("commune", ""))
-    st.write("Zone climatique :", meta.get("zone_climatique", ""))
+    st.subheader("Project summary")
+    st.write("Project name:", meta.get("Project_name", ""))
+    st.write("Municipality:", meta.get("Municipality", ""))
+    st.write("Climate zone:", meta.get("Climate zone", ""))
 
-    st.subheader("Bâtiments et ouvrages")
-    st.write(f"Nombre de bâtiments : {len(bats)}")
+    st.subheader("Buildings and units")
+    st.write(f"Number of buildings: {len(bats)}")
     nb_ouvrages = sum(len(b.get("ouvrages", [])) for b in bats)
-    st.write(f"Nombre total d’ouvrages : {nb_ouvrages}")
+    st.write(f"Total number of units: {nb_ouvrages}")
 
-    st.subheader("Paramètres de simulation")
+    st.subheader("Simulation parameters")
     st.write(params)
+    
+    # CO₂ parameter validation (Scope 2)
+    grid_f = params.get("grid_import_factor_kg_per_kWh", None)
+    try:
+        grid_f_val = float(grid_f) if grid_f is not None else None
+    except Exception:
+        grid_f_val = None
+    
+
+
+    
 
     erreurs = []
-    if not meta.get("nom_projet"):
-        erreurs.append("Le nom du projet est vide.")
+    if not meta.get("Project_name"):
+        erreurs.append("Project name is empty.")
     if len(bats) == 0:
-        erreurs.append("Aucun bâtiment défini.")
+        erreurs.append("No building defined.")
     if nb_ouvrages == 0:
-        erreurs.append("Aucun ouvrage défini.")
+        erreurs.append("No unit defined.")
     
     if erreurs:
-        st.error("Merci de corriger les points suivants avant de passer à la Phase 2 :")
+        st.error("Please fix the following items before moving to Phase 2:")
         for e in erreurs:
             st.markdown(f"- {e}")
         valide = False
     else:
-        st.success("Les données semblent cohérentes pour lancer la Phase 2.")
+        st.success("Data looks consistent to start Phase 2.")
         valide = True
+        
+    if grid_f_val is None or grid_f_val <= 0:
+        erreurs.append("Missing or invalid grid CO₂ factor (params.grid_import_factor_kg_per_kWh).")
 
-    if st.button("✅ Valider et lancer les calculs (passer à la Phase 2)") and valide:
+    if st.button("✅ Validate and run calculations (go to Phase 2)") and valide:
         project = _build_flat_project_for_calculations(data)
     
         # Injecte les catégories d’ouvrages avec leurs infos Excel
@@ -1174,7 +1468,7 @@ def page_validation(data: Dict[str, Any]):
         # Enregistre projet dans la session
         st.session_state["project"] = project
         st.session_state["validated"] = True
-        st.success("Projet validé et calculs lancés. Passage à la Phase 2.")
+        st.success("Project validated and calculations started. Switching to Phase 2.")
         st.rerun()
 
 
@@ -1184,7 +1478,7 @@ def _build_flat_project_for_calculations(data: Dict[str, Any]) -> Dict[str, Any]
     
     for bi, bat in enumerate(data["batiments"]):
         bats_flat.append({
-            "nom": bat.get("nom", f"Bâtiment {bi+1}"),
+            "nom": bat.get("nom", f"Building {bi+1}"),
             "adresse": bat.get("adresse", ""),
             
             # ✅ IMPORTANT : conserver PV toiture pour Phase 2
@@ -1205,7 +1499,7 @@ def _build_flat_project_for_calculations(data: Dict[str, Any]) -> Dict[str, Any]
             })
 
     return {
-        "nom": data["meta"].get("nom_projet", "Projet sans nom"),
+        "nom": data["meta"].get("Project_name", "Nonamed project"),
         "meta": data["meta"],         
         "batiments": bats_flat,
         "ouvrages": ouvr_flat,
@@ -1216,9 +1510,9 @@ def _build_flat_project_for_calculations(data: Dict[str, Any]) -> Dict[str, Any]
 # ========== MAIN RENDER ENTRY ==========
 def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
     st.markdown("---")
-    st.markdown("##### ⚡ Producteurs")
+    st.markdown("##### ⚡ Producers")
 
-    if st.button("➕ Ajouter un producteur", key=f"prod_add_{bi}_{oi}"):
+    if st.button("➕ Add a producer", key=f"prod_add_{bi}_{oi}"):
         ouv["producteurs"].append({
             "type_general": "",
             "techno": "",
@@ -1228,7 +1522,7 @@ def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
 
     producteurs = ouv.get("producteurs", [])
     if not producteurs:
-        st.info("Aucun producteur pour cet ouvrage.")
+        st.info("No producer for this unit.")
         return
 
     for pi, prod in enumerate(producteurs):
@@ -1238,7 +1532,7 @@ def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
             # Sélection du type
             type_options = get_available_producer_types()
             prod["type_general"] = st.selectbox(
-                "Type de producteur",
+                "Producer type",
                 options=type_options,
                 index=type_options.index(prod.get("type_general", "")) if prod.get("type_general", "") in type_options else 0,
                 key=f"type_general_{bi}_{oi}_{pi}"
@@ -1262,8 +1556,8 @@ def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
                     default_params = techno_dict.get(selected_tech, {})
                     prod["parametres"] = {
                         k: {
-                            "valeur": v["valeur"] if v["valeur"] != "-" else 0.0,
-                            "unite": v["unite"]
+                            "Values": v["Values"] if v["Values"] != "-" else 0.0,
+                            "Units": v["Units"]
                         } for k, v in default_params.items()
                     }
 
@@ -1278,125 +1572,241 @@ def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
                 
                 if engine is None:
                     st.warning(
-                        f"Aucun moteur associé à la techno '{techno_name}' "
-                        f"({type_general}). Complète ENGINE_BY_TECHNO dans core/technologies.py."
+                        f"No engine mapped to technology '{techno_name}' "
+                        f"({type_general}). Complete ENGINE_BY_TECHNO in core/technologies.py."
                     )
-
+                
+                # Only some producers require a time series production profile (e.g., PV).
+                needs_profile = (engine in ("pv",))
 
                 # Données principales
                 prod["puissance_kw"] = st.number_input(
-                    "Puissance installée [kW]",
+                    "Installed power [kW]",
                     min_value=0.0,
                     step=1.0,
                     value=prod.get("puissance_kw", 0.0) or 0.0,
                     key=f"prod_puissance_{bi}_{oi}_{pi}"
                 )
 
-                # 📁 Source de données
-                sheets, source_label = choose_excel_source(
-                    label="Choisir comment alimenter ce producteur :",
-                    key_prefix=f"prod_{bi}_{oi}_{pi}",
-                    state=prod,
-                    building_files=bat_excel,
-                    ouvrage_files=ouv.get("excel_sheets") or {},
-                    project_files=project_excel,
-                )
-                if not sheets:
-                    st.info("Aucune donnée disponible (choisis une source ou importe un fichier).")
-                    
-                if sheets:
-                    st.caption(f"📄 Source : {source_label}")
-                    sheet_names = list(sheets.keys())
-                
-                    # valeur courante (si déjà choisie auparavant)
-                    current_sheet = prod.get("prod_profile_sheet", None)
-                    sheet_index = sheet_names.index(current_sheet) if current_sheet in sheet_names else 0
-                
-                    selected_sheet = st.selectbox(
-                        "Feuille à utiliser",
-                        options=sheet_names,
-                        index=sheet_index,
-                        key=f"prod_sheet_{bi}_{oi}_{pi}",
+                if needs_profile:
+                    # 📁 Source de données (only for profile-based producers like PV)
+                    sheets, source_label = choose_excel_source(
+                        label="Choose how to feed this producer:",
+                        key_prefix=f"prod_{bi}_{oi}_{pi}",
+                        state=prod,
+                        building_files=bat_excel,
+                        ouvrage_files=ouv.get("excel_sheets") or {},
+                        project_files=project_excel,
                     )
+                    if not sheets:
+                        st.info("No data available (choose a source or upload a file).")
                 
-                    prod["prod_profile_sheet"] = selected_sheet
+                    if sheets:
+                        st.caption(f"📄 Source : {source_label}")
+                        sheet_names = list(sheets.keys())
                 
-                    df = sheets[selected_sheet]
-                    # --- unwrap si df est emballé dans un dict
-                    if isinstance(df, dict):
-                        if "df" in df:
-                            df = df["df"]
-                        elif "data" in df:
-                            df = df["data"]
-                    
-                    if df is None or not hasattr(df, "columns"):
-                        st.error("Erreur: la feuille sélectionnée n'est pas un DataFrame. Vérifie le format des excel_sheets.")
-                        st.stop()
-
-                    cols = df.columns.tolist()
-                    current_col = prod.get("prod_profile_col", None)
-                    col_index = cols.index(current_col) if current_col in cols else 0
-                    
-                    selected_col = st.selectbox(
-                        "Colonne de production à utiliser",
-                        options=cols,
-                        index=col_index,
-                        key=f"prod_col_{bi}_{oi}_{pi}",
-                    )
-                    
-                    prod["prod_profile_sheet"] = selected_sheet
-                    prod["prod_profile_col"] = selected_col
-                    # --- Colonne temps (important pour profils mensuels et future robustesse batterie/stockage)
-                    # --- Colonne temps (important pour profils mensuels)
-                    guessed = guess_time_col(df)
-                    
-                    # Si l'utilisateur n'a encore rien choisi, on pré-remplit
-                    if guessed and not prod.get("time_col"):
-                        prod["time_col"] = guessed
-
-
-                    
-                    time_cols = cols[:]  # on laisse tout (l'utilisateur peut choisir)
-                    default_time = prod.get("prod_profile_time_col")
-                    if default_time not in time_cols:
-                        default_time = guess_time_col(df)
-                    
-                    time_index = time_cols.index(default_time) if default_time in time_cols else 0
-                    
-                    selected_time_col = st.selectbox(
-                        "Colonne temps à utiliser",
-                        options=time_cols,
-                        index=time_index,
-                        key=f"prod_timecol_{bi}_{oi}_{pi}",
-                    )
-                    
-                    prod["prod_profile_time_col"] = selected_time_col
-
-                    # Test techno
-                    engine = prod.get("engine")
-                    is_pv = engine == "pv"
-
-                    
-                    if is_pv:
-                    
-                        widget_key_prefix = f"pv_{bi}_{oi}_{pi}"
-                        existing_cfg = prod.get("pv_flux_config")
-                    
-                        pv_cfg = render_pv_extra_params(
-                            df=df,
-                            existing_config=existing_cfg,
-                            widget_key_prefix=widget_key_prefix,
+                        current_sheet = prod.get("prod_profile_sheet", None)
+                        sheet_index = sheet_names.index(current_sheet) if current_sheet in sheet_names else 0
+                
+                        selected_sheet = st.selectbox(
+                            "Sheet to use",
+                            options=sheet_names,
+                            index=sheet_index,
+                            key=f"prod_sheet_{bi}_{oi}_{pi}",
                         )
+                
+                        prod["prod_profile_sheet"] = selected_sheet
+                
+                        df = sheets[selected_sheet]
+                        if isinstance(df, dict):
+                            if "df" in df:
+                                df = df["df"]
+                            elif "data" in df:
+                                df = df["data"]
+                
+                        if df is None or not hasattr(df, "columns"):
+                            st.error("Error: selected sheet is not a DataFrame. Check the excel_sheets format.")
+                            st.stop()
+                
+                        cols = df.columns.tolist()
+                        current_col = prod.get("prod_profile_col", None)
+                        col_index = cols.index(current_col) if current_col in cols else 0
+                
+                        selected_col = st.selectbox(
+                            "Production column to use",
+                            options=cols,
+                            index=col_index,
+                            key=f"prod_col_{bi}_{oi}_{pi}",
+                        )
+                
+                        prod["prod_profile_sheet"] = selected_sheet
+                        prod["prod_profile_col"] = selected_col
+                
+                        guessed = guess_time_col(df)
+                        if guessed and not prod.get("time_col"):
+                            prod["time_col"] = guessed
+                
+                        time_cols = cols[:]
+                        default_time = prod.get("prod_profile_time_col")
+                        if default_time not in time_cols:
+                            default_time = guess_time_col(df)
+                
+                        time_index = time_cols.index(default_time) if default_time in time_cols else 0
+                
+                        selected_time_col = st.selectbox(
+                            "Time column to use",
+                            options=time_cols,
+                            index=time_index,
+                            key=f"prod_timecol_{bi}_{oi}_{pi}",
+                        )
+                
+                        prod["prod_profile_time_col"] = selected_time_col
+                
+                        # Test techno
+                        engine = prod.get("engine")
+                        is_pv = engine == "pv"
+                
+                        if is_pv:
+                            widget_key_prefix = f"pv_{bi}_{oi}_{pi}"
+                            existing_cfg = prod.get("pv_flux_config")
+                
+                            pv_cfg = render_pv_extra_params(
+                                df=df,
+                                existing_config=existing_cfg,
+                                widget_key_prefix=widget_key_prefix,
+                            )
+                
+                            prod["pv_flux_config"] = pv_cfg
+                
+                        st.dataframe(df[[selected_col]].head())
+                    else:
+                        if prod.get("source_data_mode") != "Aucune":
+                            st.warning("No Excel data found for this source.")
                     
-                        prod["pv_flux_config"] = pv_cfg
-
-                    st.dataframe(df[[selected_col]].head())
                 else:
-                    if prod["source_data_mode"] != "Aucune":
-                        st.warning("Aucune donnée Excel trouvée pour cette source.")
+                    # No production profile required (boilers, heat pumps, etc.)
+                    st.info("This technology does not require a production time series. It will be simulated from thermal demand and techno parameters.")
+    
+                    # ----------------------------------------------------------
+                    # 🔥 Exergy — Heating temperatures (only for thermal heating producers)
+                    # Stored in the producer config (Phase 1 only), used by core/exergy.py
+                    # ----------------------------------------------------------
+                    engine = prod.get("engine")
+    
+                    # MVP: only apply to oil boiler for now (extend later to electric heater / HP)
+                    if engine in ("boiler_oil",):
+                        st.markdown("#### 🔥 Exergy — Heating circuit temperatures")
+    
+                        presets = [
+                            "70/65",
+                            "65/55",
+                            "60/50",
+                            "55/50",
+                            "55/45",
+                            "45/40",
+                            "45/35",
+                            "42/35",
+                            "35/28",
+                            "30/25",
+                            "Custom",
+                        ]
+    
+                        prod.setdefault("exergy_config", {})
+                        ex_cfg = prod["exergy_config"]
+    
+                        # Default preset if none
+                        default_preset = ex_cfg.get("heating_temp_preset", "55/45")
+                        if default_preset not in presets:
+                            default_preset = "55/45"
+    
+                        preset = st.selectbox(
+                            "Supply/return preset [°C]",
+                            options=presets,
+                            index=presets.index(default_preset),
+                            key=f"exergy_preset_{bi}_{oi}_{pi}",
+                        )
+                        ex_cfg["heating_temp_preset"] = preset
+    
+                        def _parse_preset(p: str):
+                            try:
+                                a, b = p.split("/")
+                                return float(a), float(b)
+                            except Exception:
+                                return None, None
+    
+                        colA, colB, colC = st.columns(3)
+    
+                        with colA:
+                            # Room temperature always available
+                            ex_cfg["room_temp_C"] = st.number_input(
+                                "Room temperature [°C]",
+                                value=float(ex_cfg.get("room_temp_C", 20.0)),
+                                step=0.5,
+                                format="%.1f",
+                                key=f"exergy_room_{bi}_{oi}_{pi}",
+                            )
+    
+                        if preset != "Custom":
+                            Ts, Tr = _parse_preset(preset)
+                            if Ts is None:
+                                Ts, Tr = 55.0, 45.0
+    
+                            # store fixed values (no inputs)
+                            ex_cfg["supply_temp_C"] = Ts
+                            ex_cfg["return_temp_C"] = Tr
+    
+                            with colB:
+                                st.number_input(
+                                    "Supply temperature [°C]",
+                                    value=float(Ts),
+                                    step=0.5,
+                                    format="%.1f",
+                                    key=f"exergy_supply_display_{bi}_{oi}_{pi}",
+                                    disabled=True,
+                                )
+                            with colC:
+                                st.number_input(
+                                    "Return temperature [°C]",
+                                    value=float(Tr),
+                                    step=0.5,
+                                    format="%.1f",
+                                    key=f"exergy_return_display_{bi}_{oi}_{pi}",
+                                    disabled=True,
+                                )
+    
+                        else:
+                            with colB:
+                                ex_cfg["supply_temp_C"] = st.number_input(
+                                    "Supply temperature [°C]",
+                                    value=float(ex_cfg.get("supply_temp_C", 55.0)),
+                                    step=0.5,
+                                    format="%.1f",
+                                    key=f"exergy_supply_{bi}_{oi}_{pi}",
+                                )
+                            with colC:
+                                ex_cfg["return_temp_C"] = st.number_input(
+                                    "Return temperature [°C]",
+                                    value=float(ex_cfg.get("return_temp_C", 45.0)),
+                                    step=0.5,
+                                    format="%.1f",
+                                    key=f"exergy_return_{bi}_{oi}_{pi}",
+                                )
+    
+                        # Basic sanity warning (no blocking)
+                        try:
+                            if float(ex_cfg["return_temp_C"]) > float(ex_cfg["supply_temp_C"]):
+                                st.warning("Return temperature is higher than supply temperature. Please check.")
+                        except Exception:
+                            pass
+    
+                    # Clean any leftover profile fields (if user previously selected a PV then switched tech)
+                    for k in ("prod_profile_sheet", "prod_profile_col", "prod_profile_time_col", "pv_flux_config"):
+                        if k in prod:
+                            prod.pop(k, None)
+
+
 
                 # BLACK BOX
-                st.markdown("### 📦 Black Box")
                 st.markdown(f"**{selected_tech}** – {prod['puissance_kw']} kW")
 
                 # Modification des paramètres
@@ -1404,26 +1814,26 @@ def render_producteurs(bi, oi, ouv, bat_excel={}, project_excel={}):
                 if state_key not in st.session_state:
                     st.session_state[state_key] = False
 
-                if st.button("✏️ Modifier les paramètres", key=f"toggle_params_{bi}_{oi}_{pi}"):
+                if st.button("✏️ Edit parameters", key=f"toggle_params_{bi}_{oi}_{pi}"):
                     st.session_state[state_key] = not st.session_state[state_key]
 
                 if st.session_state[state_key]:
-                    st.markdown("#### Paramètres modifiables")
+                    st.markdown("#### Editable parameters")
                     for param_key, param in prod["parametres"].items():
-                        if param_key.lower() in ["puissance min", "puissance max"]:
+                        if param_key.lower() in ["Min power", "Max power"]:
                             continue
-                        val = param.get("valeur", 0.0)
+                        val = param.get("Values", 0.0)
                         updated_val = st.number_input(
-                            f"{param_key} ({param.get('unite', '')})",
+                            f"{param_key} ({param.get('Units', '')})",
                             value=float(val) if val is not None else 0.0,
                             key=f"param_{bi}_{oi}_{pi}_{param_key}"
                         )
-                        prod["parametres"][param_key]["valeur"] = updated_val
+                        prod["parametres"][param_key]["Values"] = updated_val
 
             except Exception as e:
-                st.error(f"Erreur lors du chargement de la technologie : {e}")
+                st.error(f"Error while loading technology: {e}")
 
-        if st.button("🗑️ Supprimer ce producteur", key=f"prod_del_{bi}_{oi}_{pi}"):
+        if st.button("🗑️ Delete this producer", key=f"prod_del_{bi}_{oi}_{pi}"):
             producteurs.pop(pi)
             st.rerun()
 
@@ -1444,7 +1854,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
     import streamlit as st
 
     st.markdown("---")
-    st.markdown("##### 🔋 Stockages")
+    st.markdown("##### 🔋 Storages")
 
     # Init
     ouv.setdefault("stockages", [])
@@ -1456,7 +1866,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
         item = params.get(key)
         if not item:
             return default
-        v = item.get("valeur", default)
+        v = item.get("Values", default)
         try:
             if isinstance(v, str):
                 return float(v.strip().replace(" ", "").replace(",", "."))
@@ -1470,10 +1880,10 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
         item = params.get(key)
         if not item:
             return default
-        return item.get("unite", default) or default
+        return item.get("Units", default) or default
 
     # Add storage
-    if st.button("➕ Ajouter un stockage", key=f"sto_add_{bi}_{oi}"):
+    if st.button("➕ Add a storage", key=f"sto_add_{bi}_{oi}"):
         ouv["stockages"].append({
             "type_general": "",
             "techno": "",
@@ -1512,10 +1922,10 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
         })
 
     if not ouv["stockages"]:
-        st.info("Aucun stockage pour cet ouvrage.")
+        st.info("No storage for this unit.")
         return
 
-    type_options = get_available_storage_types()  # Electrique / Thermique
+    type_options = get_available_storage_types()  # Electric / Thermal
 
     for si, sto in enumerate(ouv["stockages"]):
         st.markdown(f"**Stockage {si+1}**")
@@ -1528,7 +1938,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
             with c1:
                 current_type = sto.get("type_general", "")
                 sto["type_general"] = st.selectbox(
-                    "Type de stockage",
+                    "Storage type",
                     options=[""] + type_options,
                     index=([""] + type_options).index(current_type) if current_type in ([""] + type_options) else 0,
                     key=f"sto_type_{bi}_{oi}_{si}"
@@ -1557,19 +1967,19 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
 
 
         if not sto.get("type_general") or not sto.get("techno"):
-            st.caption("Choisis un type et une technologie pour configurer le stockage.")
+            st.caption("Choose a type and a technology to configure the storage.")
             continue
 
         params = sto.get("parametres") or {}
 
         # ---------------- Dimensionnement
-        if sto["type_general"] == "Electrique":
+        if sto["type_general"] == "Electric":
             cap_min = _get_param_val(params, "Capacité min", 0.0) or 0.0
             cap_max = _get_param_val(params, "Capacité max", 999999.0) or 999999.0
             default = sto["capacity_kwh"] or (cap_min if cap_min > 0 else 10.0)
 
             sto["capacity_kwh"] = st.number_input(
-                "Capacité batterie [kWh]",
+                "Battery capacity [kWh]",
                 min_value=float(cap_min),
                 max_value=float(cap_max),
                 value=float(default),
@@ -1580,18 +1990,18 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
             cA, cB = st.columns(2)
             with cA:
                 sto["grid_charge_allowed"] = st.checkbox(
-                    "Autoriser charge depuis réseau",
+                    "Allow grid charging",
                     value=bool(sto.get("grid_charge_allowed")),
                     key=f"sto_grid_ch_{bi}_{oi}_{si}"
                 )
             with cB:
                 sto["grid_discharge_allowed"] = st.checkbox(
-                    "Autoriser décharge vers réseau",
+                    "Allow grid discharge",
                     value=bool(sto.get("grid_discharge_allowed")),
                     key=f"sto_grid_dis_{bi}_{oi}_{si}"
                 )
 
-        elif sto["type_general"] == "Thermique":
+        elif sto["type_general"] == "Thermal":
             unit = (_get_param_unit(params, "Capacité min") or "").lower()
             is_l = "l" in unit and "kwh" not in unit
 
@@ -1601,7 +2011,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
             if is_l:
                 default = sto["capacity_l"] or (cap_min if cap_min > 0 else 200.0)
                 sto["capacity_l"] = st.number_input(
-                    "Capacité accu [L]",
+                    "Tank capacity [L]",
                     min_value=float(cap_min),
                     max_value=float(cap_max),
                     value=float(default),
@@ -1611,7 +2021,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
             else:
                 default = sto["capacity_kwh_th"] or (cap_min if cap_min > 0 else 10.0)
                 sto["capacity_kwh_th"] = st.number_input(
-                    "Capacité stockage thermique [kWh_th]",
+                    "Thermal storage capacity [kWh_th]",
                     min_value=float(cap_min),
                     max_value=float(cap_max),
                     value=float(default),
@@ -1621,7 +2031,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
 
         # ---------------- Mode données
         sto["data_mode"] = st.radio(
-            "Mode données du stockage",
+            "Storage data mode",
             options=["Simuler le stockage", "Importer des mesures"],
             index=0 if sto.get("data_mode") == "simulated" else 1,
             key=f"sto_data_mode_{bi}_{oi}_{si}"
@@ -1630,7 +2040,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
 
         # ---------------- Mapping SIMULÉ
         if sto["data_mode"] == "simulated":
-            st.markdown("**Mapping énergie batterie (simulation)**")
+            st.markdown("**Battery energy mapping (simulation)**")
 
             sto.setdefault("mapping", {})
             sto["mapping"].setdefault("charge_sources", ["PV"])
@@ -1639,12 +2049,12 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
             charge_opts = ["PV"] + (["GRID"] if sto.get("grid_charge_allowed") else [])
             discharge_opts = ["LOAD"] + (["GRID"] if sto.get("grid_discharge_allowed") else [])
 
-            st.caption("La batterie se charge depuis les sources sélectionnées et se décharge vers les usages sélectionnés.")
+            st.caption("The battery charges from the selected sources and discharges to the selected sinks.")
 
             m1, m2 = st.columns(2)
             with m1:
                 sto["mapping"]["charge_sources"] = st.multiselect(
-                    "Charge depuis",
+                    "Charge from",
                     options=charge_opts,
                     default=[x for x in sto["mapping"]["charge_sources"] if x in charge_opts],
                     format_func=_label_mapping,
@@ -1653,7 +2063,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
 
             with m2:
                 sto["mapping"]["discharge_sinks"] = st.multiselect(
-                    "Décharge vers",
+                    "Discharge to",
                     options=discharge_opts,
                     default=[x for x in sto["mapping"]["discharge_sinks"] if x in discharge_opts],
                     format_func=_label_mapping,
@@ -1667,14 +2077,14 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
 
         # ---------------- Mapping MESURÉ
         else:
-            st.markdown("**Données batterie mesurées (Excel utilisateur)**")
+            st.markdown("**Measured battery data (user Excel)**")
             mp = sto.setdefault("measured_profile", {})
 
             # ==========================================================
             # 📁 Source de données (standardisé)
             # ==========================================================
             sheets, source_label = choose_excel_source(
-                label="Choisir comment alimenter ce stockage :",
+                label="Choose how to feed this storage:",
                 key_prefix=f"sto_{bi}_{oi}_{si}",
                 state=sto,  # ✅ le stockage, pas prod
                 building_files=bat_excel or {},
@@ -1686,7 +2096,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
             # Sélection feuille + colonnes
             # ==========================================================
             if not sheets:
-                st.info("Aucune donnée disponible (choisis une source ou importe un fichier).")
+                st.info("No data available (choose a source or upload a file).")
                 
             if sheets:
                 st.caption(f"📄 Source : {source_label}")
@@ -1696,7 +2106,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
                 sheet_index = sheet_names.index(current_sheet) if current_sheet in sheet_names else 0
 
                 mp["sheet"] = st.selectbox(
-                    "Feuille à utiliser",
+                    "Sheet to use",
                     options=sheet_names,
                     index=sheet_index,
                     key=f"sto_sheet_{bi}_{oi}_{si}",
@@ -1711,7 +2121,7 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
                         df = df["data"]
                 
                 if df is None:
-                    st.error("Feuille invalide ou non chargée.")
+                    st.error("Invalid or unloaded sheet.")
                     st.stop()
                 
                 if isinstance(df, str):
@@ -1868,12 +2278,24 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
                 )
 
                 # SOC (kWh ou %)
+                mp.setdefault("soc_unit", None)
+                
                 mp["soc_col"] = st.selectbox(
-                    "Colonne SOC (kWh ou %) (optionnel)",
+                    "SOC column (kWh or %) (optional)",
                     options=cols,
                     index=cols.index(mp.get("soc_col")) if mp.get("soc_col") in cols else 0,
                     key=f"sto_soc_{bi}_{oi}_{si}",
                 )
+                if mp.get("soc_col"):
+                    mp["soc_unit"] = st.selectbox(
+                        "SOC column unit",
+                        options=["kWh", "%", "fraction (0-1)"],
+                        index=(["kWh", "%", "fraction (0-1)"].index(mp["soc_unit"]) if mp.get("soc_unit") in ["kWh", "%", "fraction (0-1)"] else 0),
+                        key=f"sto_soc_unit_{bi}_{oi}_{si}",
+                        help="Required to interpret the measured SOC series. "
+                             "If SOC is in %, the battery capacity (kWh) must be provided in the technology/config.",
+                    )
+
 
                 # Petit aperçu
                 try:
@@ -1885,41 +2307,41 @@ def render_storages(bi, oi, ouv, bat_excel=None, project_excel=None):
 
             else:
                 if sto["source_data_mode"] != "Aucune":
-                    st.warning("Aucune donnée Excel trouvée pour cette source.")
+                    st.warning("No Excel data found for this source.")
 
 
-        # ---------------- Paramètres modifiables (comme producteurs)
+        # ---------------- Editable parameters (comme producteurs)
         state_key = f"sto_edit_params_{bi}_{oi}_{si}"
         if state_key not in st.session_state:
             st.session_state[state_key] = False
 
-        if st.button("✏️ Modifier les paramètres", key=f"sto_btn_params_{bi}_{oi}_{si}"):
+        if st.button("✏️ Edit parameters", key=f"sto_btn_params_{bi}_{oi}_{si}"):
             st.session_state[state_key] = not st.session_state[state_key]
 
         if st.session_state[state_key]:
-            st.markdown("#### Paramètres modifiables")
+            st.markdown("#### Editable parameters")
             for k, p in params.items():
                 if k.lower() in ["capacité min", "capacité max"]:
                     continue
-                unit = p.get("unite", "")
-                v = p.get("valeur", None)
+                unit = p.get("Units", "")
+                v = p.get("Values", None)
                 label = f"{k} ({unit})" if unit else k
 
                 try:
                     v_num = float(str(v).replace(",", "."))
-                    sto["parametres"][k]["valeur"] = st.number_input(
+                    sto["parametres"][k]["Values"] = st.number_input(
                         label,
                         value=v_num,
                         key=f"sto_param_{bi}_{oi}_{si}_{k}"
                     )
                 except Exception:
-                    sto["parametres"][k]["valeur"] = st.text_input(
+                    sto["parametres"][k]["Values"] = st.text_input(
                         label,
                         value="" if v is None else str(v),
                         key=f"sto_param_{bi}_{oi}_{si}_{k}"
                     )
 
-    if st.button("🗑️ Supprimer ce stockage", key=f"sto_del_{bi}_{oi}_{si}"):
+    if st.button("🗑️ Delete this storage", key=f"sto_del_{bi}_{oi}_{si}"):
         ouv["stockages"].pop(si)
         st.rerun()   
             
@@ -1934,17 +2356,17 @@ def render_phase1():
     data = st.session_state["phase1_data"]
 
     pages = {
-        "📋 Données initiales": page_meta,
-        "🏢 Bâtiments & ouvrages": page_batiments_ouvrages,
-        "⚙️ Paramétrage simulation": page_simu_params,
+        "📋 Initial data": page_meta,
+        "🏢 Buildings & units": page_batiments_ouvrages,
+        "⚙️ Simulation settings": page_simu_params,
         "✅ Validation": page_validation,
     }
 
-    current_label = st.session_state.get("phase1_page", "📋 Données initiales")
+    current_label = st.session_state.get("phase1_page", "📋 Initial data")
     if current_label not in pages:
-        current_label = "📋 Données initiales"
+        current_label = "📋 Initial data"
 
-    page_label = st.sidebar.radio("Phase 1 – Navigation", list(pages.keys()), index=list(pages.keys()).index(current_label))
+    page_label = st.sidebar.radio("Phase 1 — Navigation", list(pages.keys()), index=list(pages.keys()).index(current_label))
     st.session_state["phase1_page"] = page_label
 
     pages[page_label](data)

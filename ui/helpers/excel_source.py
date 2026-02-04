@@ -6,8 +6,9 @@ Created on Thu Jan  8 14:19:50 2026
 """
 
 # ui/helpers/excel_source.py
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Tuple
 import streamlit as st
+
 
 def choose_excel_source(
     *,
@@ -19,14 +20,15 @@ def choose_excel_source(
     project_files: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], str]:
     """
-    UI standard pour choisir une source Excel (upload / reuse).
-    Retourne: (selected_excel_sheets_dict, source_label)
-    Modifie 'state' (ex: state["source_data_mode"]) de manière explicite.
+    Standard UI to select an Excel data source (upload / reuse).
+    Returns: (selected_excel_sheets_dict, source_label)
+    Explicitly updates 'state' (e.g. state["source_data_mode"]).
     """
+
     def _unwrap_sheets(x: Any) -> Dict[str, Any]:
         """
-        Normalise vers: {sheet_name: DataFrame}
-        Accepte:
+        Normalize to: {sheet_name: DataFrame}
+        Accepts:
           - {sheet: df}
           - {"sheets": {sheet: df}}
         """
@@ -39,51 +41,51 @@ def choose_excel_source(
         return {}
 
     options = [
-        "Aucune",
-        "Importer un fichier",
-        "Réutiliser un fichier du bâtiment",
-        "Réutiliser un fichier de l’ouvrage",
-        "Réutiliser un fichier du projet",
+        "None",
+        "Upload a file",
+        "Reuse building file",
+        "Reuse unit file",
+        "Reuse project file",
     ]
 
     state["source_data_mode"] = st.radio(
         label,
         options=options,
-        index=options.index(state.get("source_data_mode", "Aucune")) if state.get("source_data_mode") in options else 0,
+        index=options.index(state.get("source_data_mode", "None"))
+        if state.get("source_data_mode") in options
+        else 0,
         key=f"{key_prefix}_source_mode",
     )
 
     source_label = ""
     sheets: Dict[str, Any] = {}
 
-    if state["source_data_mode"] == "Aucune":
-        return sheets, "Aucune"
+    if state["source_data_mode"] == "None":
+        return sheets, "None"
 
-    if state["source_data_mode"] == "Importer un fichier":
+    if state["source_data_mode"] == "Upload a file":
         up = st.file_uploader(
-            "Importer un fichier Excel",
+            "Upload Excel file",
             type=["xlsx", "xlsm", "xls"],
             key=f"{key_prefix}_uploader",
         )
         if up is None:
-            return {}, "Upload en attente"
-        # Ici tu ne lis pas le fichier (parce que tu as déjà ton loader ailleurs)
-        # On stocke juste un flag; le loader existant remplira st.session_state["excel_sheets"][...]
+            return {}, "Upload pending"
+
+        # File reading is handled elsewhere (existing loader)
         state["uploaded_file_present"] = True
         source_label = "Upload"
-        # Les sheets réelles doivent venir de ton pipeline existant (excel_loader)
-        # => on retourne {} et ton code appelant doit récupérer les sheets déjà chargées
+
+        # Actual sheets must come from the existing pipeline (excel_loader)
         return {}, source_label
 
-    if state["source_data_mode"] == "Réutiliser un fichier du bâtiment":
-        return _unwrap_sheets(building_files), "Bâtiment"
+    if state["source_data_mode"] == "Reuse building file":
+        return _unwrap_sheets(building_files), "Building"
 
+    if state["source_data_mode"] == "Reuse unit file":
+        return _unwrap_sheets(ouvrage_files), "Unit"
 
-    if state["source_data_mode"] == "Réutiliser un fichier de l’ouvrage":
-        return _unwrap_sheets(ouvrage_files), "Ouvrage"
-    
-    if state["source_data_mode"] == "Réutiliser un fichier du projet":
-        return _unwrap_sheets(project_files), "Projet"
+    if state["source_data_mode"] == "Reuse project file":
+        return _unwrap_sheets(project_files), "Project"
 
-
-    raise ValueError(f"Mode source_data_mode inattendu: {state['source_data_mode']}")
+    raise ValueError(f"Unexpected source_data_mode: {state['source_data_mode']}")

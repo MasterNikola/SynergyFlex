@@ -17,8 +17,8 @@ def _load_techno_file(file_name: str) -> dict:
         df = df.dropna(subset=[df.columns[0]])
         tech_data = {
             str(row[df.columns[0]]).strip(): {
-                "valeur": row[df.columns[1]],
-                "unite": row[df.columns[2]] if len(row) > 2 else ""
+                "Values": row[df.columns[1]],
+                "Units": row[df.columns[2]] if len(row) > 2 else ""
             }
             for _, row in df.iterrows()
         }
@@ -26,18 +26,18 @@ def _load_techno_file(file_name: str) -> dict:
     return data
 
 
-# ⚡ Producteurs (électrique, thermique, mixte)
+# ⚡ Producteurs (électrique, Thermal, mixte)
 PRODUCER_REGISTRY = {
-    "Electrique": {
-        "label": "Technologie électrique",
+    "Electric": {
+        "label": "Electrical technology",
         "file": "electricity_producers.xlsx"
     },
-    "Thermique": {
-        "label": "Technologie thermique",
+    "Thermal": {
+        "label": "Thermal technology",
         "file": "thermal_producers.xlsx"
     },
-    "Mixte": {
-        "label": "Technologie mixte",
+    "Hybrid": {
+        "label": "Hybrid technology",
         "file": "mixed_producers.xlsx"
     }
 }
@@ -53,7 +53,7 @@ def get_label_for_producer(type_general: str) -> str:
 
 def load_producer_technologies(type_general: str) -> dict:
     """
-    Charge les technologies de producteurs selon le type (Electrique, Thermique, Mixte).
+    Charge les technologies de producteurs selon le type (Electric, Thermal, Hybrid).
     """
     config = PRODUCER_REGISTRY.get(type_general)
     if not config:
@@ -61,14 +61,14 @@ def load_producer_technologies(type_general: str) -> dict:
     return _load_techno_file(config["file"])
 
 
-# 🧊 Stockages (électrique, thermique, mixte)
+# 🧊 Stockages (électrique, Thermal, mixte)
 STOCKAGE_REGISTRY = {
-    "Electrique": {
-        "label": "Stockage électrique",
+    "Electric": {
+        "label": "Electrical storage",
         "file": "electricity_storage.xlsx"
     },
-    "Thermique": {
-        "label": "Stockage thermique",
+    "Thermal": {
+        "label": "Thermal storage",
         "file": "thermal_storage.xlsx"
     },
 }
@@ -95,10 +95,23 @@ def load_storage_technologies(type_general: str) -> dict:
 # Le principe : on mappe le type + nom EXACT de la techno vers un ID stable, court.
 ENGINE_BY_TECHNO = {
     # "Type général"      "Nom EXACT de la techno dans l'Excel" : "ID interne"
-    ("Electrique", "Photovoltaic panel"): "pv",
-    # ("Thermique", "PAC air-eau"): "pac_ae",
-    ("Electrique", "Battery Li-ion") : "bat_li_ion",
+    ("Electric", "Photovoltaic panel"): "pv",
+    ("Electric", "Battery Li-ion") : "bat_li_ion",
+    ("Electric", "Battery Evolium") : "bat_li_ion",
+
+    # --- Thermal producers (tabs renamed in English) ---
+    ("Thermal", "Wood stove"): "wood_stove",
+    ("Thermal", "Pellet stove"): "pellet_stove",
+    ("Thermal", "Log boiler"): "boiler_log",
+    ("Thermal", "Pellet boiler"): "boiler_pellet",
+    ("Thermal", "Gaz boiler"): "boiler_gas",
+    ("Thermal", "Oil boiler"): "boiler_oil",
+    ("Thermal", "Electric Heater"): "electric_heater",
+    ("Thermal", "Air-to-Water Heat pump"): "hp_air_water",
+    ("Thermal", "Water-to-Water Heat pump"): "hp_water_water",
+    ("Thermal", "Solar Thermal"): "solar_thermal",
 }
+
 
 def infer_engine_from_type_and_techno(type_general: str, techno_name: str) -> str | None:
     """

@@ -23,27 +23,29 @@ def render_pv_extra_params(
     widget_key_prefix: str = "",
 ) -> Dict[str, Any]:
     """
-    UI simple pour les paramètres PV supplémentaires :
-    - colonne d'autoconsommation SI elle existe
-    - sinon, taux d'autoconsommation estimé [%]
+    Simple UI for additional PV parameters:
+    - PV self-consumption column IF it exists
+    - otherwise, estimated self-consumption rate [%]
 
-    Retourne un dict du type :
+    Returns a dict of the form:
     {
-        "col_pv_auto": "NomColonne" ou None,
-        "default_selfc_pct": 20 ou autre,
+        "col_pv_auto": "ColumnName" or None,
+        "default_selfc_pct": 20 or other,
+        "orientation_deg": float,
+        "inclinaison_deg": float,
     }
     """
-    st.markdown("##### Paramètres PV supplémentaires")
-    
+    st.markdown("##### Additional PV parameters")
+
     cfg = existing_config.copy() if existing_config else {}
-    
+
     orientation_deg = float(cfg.get("orientation_deg", 0.0))
     inclinaison_deg = float(cfg.get("inclinaison_deg", 30.0))
 
     col1, col2 = st.columns(2)
     with col1:
         orientation_deg = st.number_input(
-            "Orientation du champ PV [°]\n(0° = Sud, -90° = Ouest, 180° ou -180° = Nord, 90° = Est)",
+            "PV field orientation [°]\n(0° = South, -90° = West, 180° or -180° = North, 90° = East)",
             min_value=0.0,
             max_value=360.0,
             value=orientation_deg,
@@ -52,7 +54,7 @@ def render_pv_extra_params(
         )
     with col2:
         inclinaison_deg = st.number_input(
-            "Inclinaison du champ PV [°]",
+            "PV field tilt [°]",
             min_value=0.0,
             max_value=90.0,
             value=inclinaison_deg,
@@ -60,14 +62,13 @@ def render_pv_extra_params(
             key=f"{widget_key_prefix}_pv_inclinaison_deg",
         )
 
-
     col_pv_auto = cfg.get("col_pv_auto")
     default_selfc_pct = cfg.get("default_selfc_pct", 20)
 
-    # 1) Checkbox : est-ce qu'il a une colonne d'autocons ?
+    # 1) Checkbox: is there a PV self-consumption column?
     has_pv_auto_default = col_pv_auto is not None
     has_pv_auto = st.checkbox(
-        "Avez-vous une colonne d'autoconsommation PV ?",
+        "Do you have a PV self-consumption column?",
         value=has_pv_auto_default,
         key=f"{widget_key_prefix}_has_pv_auto",
     )
@@ -76,7 +77,7 @@ def render_pv_extra_params(
         cols_num = df.select_dtypes(include=["number"]).columns.tolist()
 
         if not cols_num:
-            st.warning("Aucune colonne numérique trouvée dans le fichier.")
+            st.warning("No numeric column found in the file.")
             col_pv_auto = None
             default_selfc_pct = None
         else:
@@ -84,18 +85,18 @@ def render_pv_extra_params(
                 col_pv_auto = cols_num[0]
 
             col_pv_auto = st.selectbox(
-                "Sélectionnez la colonne d'autoconsommation PV :",
+                "Select the PV self-consumption column:",
                 options=cols_num,
                 index=cols_num.index(col_pv_auto) if col_pv_auto in cols_num else 0,
                 key=f"{widget_key_prefix}_pv_auto_col",
             )
-            # si colonne réelle → plus besoin d'un % par défaut
+            # Real column → no default percentage needed
             default_selfc_pct = None
     else:
         col_pv_auto = None
-        # 2) Slider pour le taux d'autoconsommation estimé
+        # 2) Slider for estimated self-consumption rate
         default_selfc_pct = st.slider(
-            "Taux d'autoconsommation PV estimé [%]",
+            "Estimated PV self-consumption rate [%]",
             min_value=0,
             max_value=100,
             value=int(default_selfc_pct),
@@ -110,52 +111,6 @@ def render_pv_extra_params(
         "inclinaison_deg": inclinaison_deg,
     }
 
-def extract_pv_standard_inputs(prod: Dict[str, Any], project_meta: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], list[str]]:
-    """
-    Prépare toutes les infos nécessaires pour le calcul du profil PV standard.
-    Retourne (inputs, missing) :
-      - inputs = dict si tout est OK
-      - missing = liste de libellés manquants
-    """
-    missing: list[str] = []
-
-    techno_params = prod.get("parametres", {}) or {}
-
-    p_module_kw = _get_param_val(techno_params, "Puissance du module", 0.0)
-    area_module_m2 = _get_param_val(techno_params, "Surface du module", 0.0)
-    eta_mod_pct = _get_param_val(techno_params, "Rendement", 0.0)
-
-    pv_cfg = prod.get("pv_flux_config", {}) or {}
-    orientation = pv_cfg.get("orientation_deg")
-    inclinaison = pv_cfg.get("inclinaison_deg")
-
-    station = project_meta.get("station_meteo") or project_meta.get("station")  # selon ce que tu utilises
-
-    if not station:
-        missing.append("Station météo (Phase 1)")
-    if orientation is None:
-        missing.append("Orientation champ PV [°]")
-    if inclinaison is None:
-        missing.append("Inclinaison champ PV [°]")
-    if p_module_kw <= 0:
-        missing.append("Puissance du module (kW)")
-    if area_module_m2 <= 0:
-        missing.append("Surface du module (m²)")
-    if eta_mod_pct <= 0:
-        missing.append("Rendement (%)")
-
-    if missing:
-        return None, missing
-
-    inputs = {
-        "station_name": station,
-        "orientation_deg": float(orientation),
-        "tilt_deg": float(inclinaison),
-        "p_module_kw": float(p_module_kw),
-        "area_module_m2": float(area_module_m2),
-        "eta_mod_pct": float(eta_mod_pct),
-    }
-    return inputs, []
 
 
 def _get_param_val(techno_params: Dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -172,7 +127,7 @@ def _get_param_val(techno_params: Dict[str, Any], key: str, default: float = 0.0
     """
     raw = techno_params.get(key, {})
     if isinstance(raw, dict):
-        val = raw.get("valeur", default)
+        val = raw.get("Values", default)
     else:
         val = raw
     try:
@@ -196,7 +151,7 @@ def _get_param_numeric(
     for key in candidate_keys:
         raw = techno_params.get(key)
         if isinstance(raw, dict):
-            val = raw.get("valeur", None)
+            val = raw.get("Values", None)
         else:
             val = raw
 
@@ -248,6 +203,7 @@ def compute_pv_economics(
             "CAPEX (CHF/kW)",
             "Investissement spécifique (CHF/kW)",
             "Capex",
+            "CAPEX",
         ],
         default=0.0,
     )
@@ -257,6 +213,7 @@ def compute_pv_economics(
             "Capex (CHF)",
             "Capex total (CHF)",
             "Investissement total (CHF)",
+           
         ],
         default=0.0,
     )
@@ -275,6 +232,7 @@ def compute_pv_economics(
             "OPEX (CHF/an)",
             "Coûts fixes (CHF/an)",
             "Opex",
+            "OPEX"
         ],
         default=0.0,
     )
@@ -302,6 +260,7 @@ def compute_pv_economics(
             "Durée de vie [ans]",
             "Lifetime (a)",
             "Durée de vie",
+            "Lifetume"
         ],
         default=25.0,
     )
@@ -505,7 +464,7 @@ def compute_pv_monthly_energy_per_kw(
     """
 
     if p_module_kw <= 0 or area_module_m2 <= 0:
-        raise ValueError("p_module_kw et area_module_m2 doivent être > 0.")
+        raise ValueError("p_module_kw and area_module_m2 must be > 0.")
 
     # Étape 1 : énergie sur le plan du module, par m²
     E_m2 = compute_pv_monthly_energy_m2(
@@ -537,7 +496,7 @@ def aggregate_pv_profile_monthly(
       3) 12 valeurs sans date -> assumé Jan→Déc                    [PATCH 1 via timebase / fallback final]
     """
     if prod_profile_col not in df.columns:
-        raise KeyError(f"Colonne '{prod_profile_col}' introuvable.")
+        raise KeyError(f"Column '{prod_profile_col}' not found.")
 
     # 1) PATCH 1 : cas time_col (ou auto-détection) + fallback "12 valeurs"
     monthly = build_monthly_kwh_from_df(df, energy_col=prod_profile_col, time_col=time_col)
@@ -633,10 +592,13 @@ def compute_pv_flow_block(
     """
 
     if df is None or df.empty:
-        raise ValueError("Impossible de calculer un bloc PV : df vide.")
+        raise ValueError("Unable to compute PV flow block: empty DataFrame.")
 
     if prod_profile_col not in df.columns:
-        raise KeyError(f"Colonne de production PV '{prod_profile_col}' introuvable dans le DataFrame.")
+        raise KeyError(
+    f"PV production column '{prod_profile_col}' not found in the DataFrame."
+)
+
 
     pv_cfg = prod.get("pv_flux_config", {}) or {}
     col_pv_auto = pv_cfg.get("col_pv_auto")
@@ -645,7 +607,7 @@ def compute_pv_flow_block(
     # --- Production totale PV ---
     prod_pv = float(pd.to_numeric(df[prod_profile_col], errors="coerce").fillna(0).sum())
     if prod_pv <= 0:
-        raise ValueError("Production PV totale nulle ou négative, bloc non pertinent.")
+        raise ValueError("Total PV production is zero or negative; flow block is not relevant.")
 
     # --- Autoconsommation ---
     if col_pv_auto and col_pv_auto in df.columns:
@@ -681,13 +643,13 @@ def compute_pv_flow_block(
                 "id": load_node_id,
                 "label": meta.get(
                     "elec_use_label",
-                    "Consommation élec. bâtiment"
+                    "Building electricity consumption"
                 ),
                 "group": "use_elec",
             },
             {
                 "id": grid_node_id,
-                "label": meta.get("grid_inj_label", "Réseau électrique"),
+                "label": meta.get("grid_inj_label", "Electric grid"),
                 "group": "reseau",
             },
         ],

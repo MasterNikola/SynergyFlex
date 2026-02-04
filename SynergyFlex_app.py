@@ -17,44 +17,42 @@ def init_session_state():
 
 
 def sidebar_menu():
-    st.sidebar.header("Gestion du projet")
+    st.sidebar.header("Project management")
 
-    if st.sidebar.button("🆕 Nouveau projet"):
+    if st.sidebar.button("🆕 New project"):
         st.session_state["project"] = None
         st.session_state["validated"] = False
         st.rerun()
 
-
-    uploaded = st.sidebar.file_uploader("📂 Charger un projet (.json)", type=["json"])
+    uploaded = st.sidebar.file_uploader("📂 Load a project (.json)", type=["json"])
     if uploaded:
         st.session_state["project"] = import_project_from_json(uploaded)
         st.session_state["validated"] = True
-        st.success("Projet chargé !")
+        st.success("Project loaded!")
         st.rerun()
-
 
     if st.session_state["project"] is not None:
         data_light = export_project_dict(st.session_state["project"], include_results=False)
         st.sidebar.download_button(
-            "💾 Exporter le projet",
+            "💾 Export project",
             data=data_light,
             file_name="projet_synergyflex.json",
             mime="application/json",
         )
-    
+
         data_full = export_project_dict(st.session_state["project"], include_results=True, include_timeseries=False)
 
         if data_full is None:
-            st.sidebar.error("Export debug: export_project_dict a renvoyé None (voir io_project.py).")
+            st.sidebar.error("Debug export: export_project_dict returned None (see io_project.py).")
         else:
             st.sidebar.download_button(
-                "🐞 Export complet (debug résumé)",
+                "🐞 Full export (debug summary)",
                 data=data_full,
                 file_name="synergyflex_results_summary.json",
                 mime="application/json",
             )
 
-        # Export timeseries séparé
+        # Export timeseries separately
         ts_store = ((st.session_state["project"].get("results") or {}).get("timeseries_store") or {})
         if ts_store:
             import pandas as pd
@@ -64,7 +62,7 @@ def sidebar_menu():
                 ouvs = (bd.get("ouvrages") or {})
                 for oi, rec in ouvs.items():
                     idx = rec.get("index") or []
-                    # colonnes possibles
+                    # possible columns
                     cols = {k: v for k, v in rec.items() if isinstance(v, list) and k != "index"}
                     for i, t in enumerate(idx):
                         row = {
@@ -87,15 +85,15 @@ def sidebar_menu():
 
 
 def render_header():
-    """Affiche le logo SynergyFlex centré en haut de la page."""
-    # 3 colonnes pour centrer proprement
+    """Display the SynergyFlex logo centered at the top of the page."""
+    # 3 columns to center properly
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        st.image("logo_synergyflex.png", use_container_width=True)
+        st.image("logo_synergyflex.png")
 
 
 def main():
-    # Config générale de la page (titre + icône d’onglet)
+    # General page config (title + tab icon)
     st.set_page_config(
         page_title="SynergyFlex",
         layout="wide",
@@ -105,16 +103,16 @@ def main():
     init_session_state()
     sidebar_menu()
 
-    # --- HEADER COMMUN (logo) ---
+    # --- COMMON HEADER (logo) ---
     render_header()
-    st.write("")  # petit espace
+    st.write("")  # small spacer
 
-    # --- ROUTAGE PHASE 1 / PHASE 2 ---
+    # --- ROUTING PHASE 1 / PHASE 2 ---
     if not st.session_state["validated"]:
-        st.subheader("Phase 1 – Préparation des données")
+        st.subheader("Phase 1 — Data preparation")
         render_phase1()
     else:
-        st.subheader("Phase 2 – Analyse et visualisation")
+        st.subheader("Phase 2 — Analysis & visualization")
         render_phase2()
 
 

@@ -43,7 +43,10 @@ def dispatch_electric_storage(
 
     index = prod_series.index
     if not index.equals(load_series.index):
-        raise ValueError("dispatch_electric_storage: prod_series et load_series doivent avoir le même index")
+        raise ValueError(
+            "dispatch_electric_storage: prod_series et load_series doivent avoir le même index"
+        )
+
 
     dt_h = infer_dt_hours_from_index(index)
 

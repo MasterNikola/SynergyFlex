@@ -19,6 +19,7 @@ from core.nodes_ontology import (
     node_heat_prod,
     node_pv,
     node_battery,
+    node_heat_grid,
     # plus tard : node_battery, node_device, etc.
 )
 from core.economics import get_param_numeric, compute_battery_cashflow_series
@@ -32,6 +33,10 @@ from core.utils.timebase import (
     infer_dt_hours_from_index,
     build_monthly_kwh_from_df,
     extract_time_info)
+from core.co2 import compute_co2_results
+from core.exergy import compute_exergy_results
+from core.sia_calculus import compute_sia_results
+from core.thermal_producer_module import compute_oil_boiler_from_demand_ts
 
 
 
@@ -48,7 +53,7 @@ def _get_param_numeric(
     """
     Cherche une valeur numérique dans tech_params en testant plusieurs clés possibles.
     tech_params ressemble à :
-        { "Puissance du module": {"valeur": 0.42, "unite": "kW"}, ... }
+        { "Puissance du module": {"valeur": 0.42, "Units": "kW"}, ... }
     """
     if not tech_params:
         return default
@@ -56,7 +61,7 @@ def _get_param_numeric(
     for key in candidate_keys:
         raw = tech_params.get(key)
         if isinstance(raw, dict):
-            val = raw.get("valeur", None)
+            val = raw.get("Values", None)
         else:
             val = raw
         if val is None:
@@ -73,14 +78,14 @@ def _get_price_buy_sell_and_horizon(project: dict):
 
     # On exige que Phase 1 ait rempli ces valeurs dans params.
     # (les defaults UI peuvent être 0.25/0.06/25, mais on ne fallback pas ici)
-    if "horizon_analyse_ans" not in params:
-        raise ValueError("Paramètre manquant: project.params.horizon_analyse_ans")
+    if "analysis_horizon_years" not in params:
+        raise ValueError("Missing parameter: project.params.analysis_horizon_years")
     if "price_buy_chf_kwh" not in params:
-        raise ValueError("Paramètre manquant: project.params.price_buy_chf_kwh")
+        raise ValueError("Missing parameter: project.params.price_buy_chf_kwh")
     if "price_sell_chf_kwh" not in params:
-        raise ValueError("Paramètre manquant: project.params.price_sell_chf_kwh")
+        raise ValueError("Missing parameter: project.params.price_sell_chf_kwh")
 
-    horizon_years = int(params["horizon_analyse_ans"])
+    horizon_years = int(params["analysis_horizon_years"])
     price_buy = float(params["price_buy_chf_kwh"])
     price_sell = float(params["price_sell_chf_kwh"])
 
@@ -107,17 +112,15 @@ def _apply_replacements_to_cashflows(
         return cashflows
 
     if lifetime_years <= 0:
-        raise ValueError("lifetime_years doit être > 0 pour appliquer des remplacements.")
-
-    if horizon_years <= 0:
-        return cashflows
+        raise ValueError("lifetime_years must be > 0 to apply replacement costs.")
 
     if replacement_cost_factor <= 0:
-        raise ValueError("replacement_cost_factor doit être > 0 pour appliquer des remplacements.")
-
+        raise ValueError("replacement_cost_factor must be > 0 to apply replacement costs.")
+    
     step = int(round(float(lifetime_years)))
     if step <= 0:
-        raise ValueError(f"Durée de vie invalide (arrondie): lifetime_years={lifetime_years}")
+        raise ValueError(f"Invalid lifetime after rounding: lifetime_years={lifetime_years}")
+
 
     replacement_cost = float(capex_total_chf) * float(replacement_cost_factor)
 
@@ -242,14 +245,14 @@ def _normalize_efficiency(eta_raw: float) -> float:
     Refuse tout fallback silencieux.
     """
     if eta_raw is None:
-        raise ValueError("Batterie proposée: eta_global manquant.")
+        raise ValueError("Proposed battery: eta_global missing.")
     eta = float(eta_raw)
     if eta <= 0:
-        raise ValueError(f"Batterie proposée: eta_global invalide (<=0): {eta_raw}")
+        raise ValueError(f"Proposed battery: invalid eta_global (<= 0): {eta_raw}")
     if eta > 1.0:
         eta = eta / 100.0
     if not (0.0 < eta <= 1.0):
-        raise ValueError(f"Batterie proposée: eta_global invalide après normalisation: {eta}")
+        raise ValueError(f"Proposed battery: invalid eta_global after normalization: {eta}")
     return eta
 
 
@@ -265,9 +268,10 @@ def _pack_capacities(total_kwh: float, e_min: float, e_max: float) -> list:
     e_max = float(e_max)
 
     if total_kwh <= 0:
-        raise ValueError("Batterie proposée: capacité totale <= 0.")
+        raise ValueError("Proposed battery: total capacity <= 0.")
     if e_min <= 0 or e_max <= 0 or e_min > e_max:
-        raise ValueError("Batterie proposée: capacity_min/max invalides.")
+        raise ValueError("Proposed battery: invalid capacity_min/capacity_max.")
+
 
     if total_kwh <= e_max:
         return [max(total_kwh, e_min)]
@@ -346,14 +350,14 @@ def run_calculations(
         return str(bat_id)
     
     def _get_default_pv_tech_params() -> dict:
-        techs = load_producer_technologies("Electrique") or {}
+        techs = load_producer_technologies("Electric") or {}
     
         # Cas 1 (le plus probable chez toi) : techs = {"Photovoltaic panel": {...}, "Wind turbine": {...}}
         if "Photovoltaic panel" in techs:
             return techs["Photovoltaic panel"] or {}
     
-        # Cas 2 : structure imbriquée {"Electrique": {"Photovoltaic panel": {...}}}
-        elec = techs.get("Electrique", {}) or {}
+        # Cas 2 : structure imbriquée {"Electric": {"Photovoltaic panel": {...}}}
+        elec = techs.get("Electric", {}) or {}
         if "Photovoltaic panel" in elec:
             return elec["Photovoltaic panel"] or {}
     
@@ -379,6 +383,8 @@ def run_calculations(
     ts_pv_by_bat = {}     # bat_id -> list[pd.Series kWh/step]
     pv_ts_by_bat = {}    # bat_id -> list[pd.Series]
     load_ts_by_bat = {}  # bat_id -> list[pd.Series]
+    # THERMAL (measured) – accumulator for Core thermal modules
+    ts_th_by_bat = {}     # bat_id -> list[pd.Series kWh_th/step]
 
 
     for oi, ouv in enumerate(ouvrages):
@@ -422,7 +428,7 @@ def run_calculations(
                 # JSON-friendly : pas de datetime brute
                 results["timebase_debug"][f"demand::{sheet_name}"] = info
 
-        # 1) FLOW_BLOCK – DEMANDE ELECTRIQUE (conservation pour analyse fine)
+        # 1) FLOW_BLOCK – DEMANDE Electric (conservation pour analyse fine)
         if df_demand is not None and conso_elec_col and conso_elec_col in df_demand.columns:
             serie_elec = pd.to_numeric(df_demand[conso_elec_col], errors="coerce")
             local_demand_elec_kwh = float(serie_elec.sum(skipna=True) or 0.0)
@@ -497,8 +503,8 @@ def run_calculations(
                         "conso_elec_col": conso_elec_col,
                     },
                     "nodes": [
-                        {"id": grid_id, "label": "Réseau électrique", "group": "reseau"},
-                        {"id": load_id, "label": "Consommation électrique", "group": "demande"},
+                        {"id": grid_id, "label": "Electric grid", "group": "reseau"},
+                        {"id": load_id, "label": "Electrical demand", "group": "demande"},
                     ],
                     "links": [
                         {"source": grid_id, "target": load_id, "value": local_demand_elec_kwh},
@@ -515,9 +521,36 @@ def run_calculations(
         if df_demand is not None and conso_th_col and conso_th_col in df_demand.columns:
             serie_th = pd.to_numeric(df_demand[conso_th_col], errors="coerce")
             local_demand_th_kwh = float(serie_th.sum(skipna=True) or 0.0)
+            
+            # PATCH TH-1: série fine demande thermique (kWh_th/step) pour modules thermiques
+            ts_th_kwh = None
+            try:
+                ts_th_kwh = build_timeseries_kwh(df_demand, conso_th_col, time_col=time_col)
+            except Exception:
+                ts_th_kwh = None
+            
+            if ts_th_kwh is not None:
+                ts_th_by_bat.setdefault(bat_id, []).append(ts_th_kwh)
+            
+                # Contrat JSON-friendly
+                results.setdefault("timeseries_by_batiment", {})
+                b = results["timeseries_by_batiment"].setdefault(str(bat_id), {})
+                b.setdefault("thermal_measured", {})
+                b["thermal_measured"].update({
+                    "index": [str(x) for x in ts_th_kwh.index],
+                    "demand_th_kWh": ts_th_kwh.values.tolist(),
+                    "meta": {
+                        "batiment_id": bat_id,
+                        "batiment_nom": bat_nom,
+                        "dt_h_med": float(infer_dt_hours_from_index(ts_th_kwh.index)),
+                        "sheet_name": sheet_name,
+                        "time_col": time_col,
+                        "conso_th_col": conso_th_col,
+                    },
+                })
 
             if local_demand_th_kwh > 0:
-                heat_src_id = node_heat_prod("UNKNOWN", index=1)
+                heat_src_id = node_heat_grid()
                 heat_load_id = node_heat_load()
 
                 flow_block_th = {
@@ -535,12 +568,12 @@ def run_calculations(
                     "nodes": [
                         {
                             "id": heat_src_id,
-                            "label": "Système de chauffage",
-                            "group": "prod_th",
+                            "label": "Thermal supply (residual)",
+                            "group": "reseau",
                         },
                         {
                             "id": heat_load_id,
-                            "label": "Consommation thermique",
+                            "label": "Thermal demand",
                             "group": "demande",
                         },
                     ],
@@ -574,7 +607,7 @@ def run_calculations(
                 is_pv = (
                     engine == "pv"
                     or (
-                        type_general == "Electrique"
+                        type_general == "Electric"
                         and isinstance(techno, str)
                         and "photovoltaic panel" in techno.lower()
                     )
@@ -682,15 +715,15 @@ def run_calculations(
                 tech_params = prod.get("parametres", {}) or {}
                 p_module_kw = _get_param_numeric(
                     tech_params,
-                    ["Puissance du module", "Puissance du module (kW)", "Puissance du module [kW]", "Puissance module [kW]", "Puissance module"]
+                    ["Module power"]
                 )
                 area_module_m2 = _get_param_numeric(
                     tech_params,
-                    ["Surface du module", "Surface du module (m2)", "Surface module (m2)", "surface du module (m2)"]
+                    ["Module area"]
                 )
                 eta_mod_pct = _get_param_numeric(
                     tech_params,
-                    ["Rendement", "Rendement (%)", "Rendement module (%)"]
+                    ["Efficiency"]
                 )
                 
                 installed_kw = float(prod.get("puissance_kw", 0.0) or 0.0)
@@ -712,9 +745,9 @@ def run_calculations(
                 missing = []
                 if orientation is None:  missing.append("orientation")
                 if inclinaison is None:  missing.append("inclinaison")
-                if p_module_kw <= 0:     missing.append("Puissance du module")
-                if area_module_m2 <= 0:  missing.append("Surface du module")
-                if eta_mod_pct <= 0:     missing.append("Rendement du module")
+                if p_module_kw <= 0:     missing.append("Module power")
+                if area_module_m2 <= 0:  missing.append("Module area")
+                if eta_mod_pct <= 0:     missing.append("Efficiency")
                 
                 # ---- Construction de l’enregistrement PV_STANDARD ----
                 pv_standard_record = {
@@ -828,7 +861,7 @@ def run_calculations(
 
                 
                 for si, sto in enumerate(ouv.get("stockages") or []):
-                    if (sto.get("type_general") or "") != "Electrique":
+                    if (sto.get("type_general") or "") != "Electric":
                         continue
         
                     engine = (sto.get("engine") or "")
@@ -924,62 +957,88 @@ def run_calculations(
                                 else:
                                     batt_to_load = batt_to_load.add(s, fill_value=0.0)
                     
-                            # SOC (optionnel)
-                            ts_soc = None
+                            # ==========================================================
+                            # SOC (optionnel) + unité (kWh / % / fraction 0-1)
+                            # ==========================================================
+                            ts_soc_raw = None
+                            ts_soc_kwh = None
+
+                            soc_unit = (mp.get("soc_unit") or "").strip()  # attendu: "kWh" / "%" / "fraction (0-1)"
+
                             if col_soc and col_soc in df_sto.columns:
                                 try:
-                                    ts_soc = build_timeseries_kwh(df_sto, col_soc, time_col=time_col)
-                                    ts_soc = align_energy_series_to_index(ts_soc, common_index)
+                                    ts_soc_raw = build_timeseries_kwh(df_sto, col_soc, time_col=time_col)
+                                    ts_soc_raw = align_energy_series_to_index(ts_soc_raw, common_index)
                                 except Exception:
-                                    ts_soc = None
-                    
+                                    ts_soc_raw = None
+
+                            # Conversion SOC -> kWh (déterministe, pas de fallback silencieux)
+                            if ts_soc_raw is not None and len(ts_soc_raw) > 0:
+                                if soc_unit == "kWh":
+                                    ts_soc_kwh = ts_soc_raw
+                                elif soc_unit in ("%", "fraction (0-1)"):
+                                    C = float(sto.get("capacity_kwh") or 0.0)
+                                    if C <= 0:
+                                        raise ValueError(
+                                            "Measured battery: SOC given in % or fraction, but capacity_kwh is missing or <= 0."
+                                        )
+                                    if soc_unit == "%":
+                                        ts_soc_kwh = (ts_soc_raw / 100.0) * C
+                                    else:
+                                        ts_soc_kwh = ts_soc_raw * C
+                                else:
+                                    raise ValueError(
+                                        "Measured battery: soc_unit missing or invalid. "
+                                        "Expected: 'kWh', '%', or 'fraction (0-1)'."
+                                    )
+
                             pv_to_batt_kWh = float(pv_to_batt.sum())
                             grid_to_batt_kWh = float(grid_to_batt.sum())
                             batt_to_load_kWh = float(batt_to_load.sum())
                             batt_to_grid_kWh = float(batt_to_grid.sum())
-                    
+
                             charge_total_kWh = pv_to_batt_kWh + grid_to_batt_kWh
                             discharge_total_kWh = batt_to_load_kWh + batt_to_grid_kWh
-                    
-                            # --- Pertes via bilan énergétique (+ SOC si présent)
+
+                            # --- Pertes via bilan énergétique (+ SOC si présent en kWh)
                             losses_kWh = 0.0
                             soc_start = None
                             soc_end = None
-                    
+
                             # énergie "non restituée" (pertes + ΔSOC) -> cohérent même si charge vient de GRID
                             gap = float(charge_total_kWh - discharge_total_kWh)
-                    
-                            if ts_soc is not None and len(ts_soc) > 0:
-                                soc_start = float(ts_soc.iloc[0])
-                                soc_end = float(ts_soc.iloc[-1])
+
+                            if ts_soc_kwh is not None and len(ts_soc_kwh) > 0:
+                                soc_start = float(ts_soc_kwh.iloc[0])
+                                soc_end = float(ts_soc_kwh.iloc[-1])
                                 delta_soc = soc_end - soc_start
                                 losses_kWh = float(max(gap - delta_soc, 0.0))
                             else:
-                                # Pas de SOC: on ne peut pas distinguer pertes vs ΔSOC.
+                                # Pas de SOC (ou SOC non convertible): on ne peut pas distinguer pertes vs ΔSOC.
                                 # Pour debug Sankey, on considère le gap comme "pertes/non affecté".
                                 losses_kWh = float(max(gap, 0.0))
-                    
+
                             # --- Impacts (MVP : basé sur batt->load et pv->batt)
                             grid_to_load_base_local = float((load_ts - (pv_ts.combine(load_ts, min))).clip(lower=0.0).sum())
                             pv_to_grid_base_local = float((pv_ts - pv_ts.combine(load_ts, min)).clip(lower=0.0).sum())
-                    
+
                             delta_imp = min(batt_to_load_kWh, grid_to_load_base_local)
                             delta_inj = min(pv_to_batt_kWh, pv_to_grid_base_local)
                             delta_sc = min(batt_to_load_kWh, float(load_ts.sum()))
-                    
+
                             # --- Nodes/links pour Phase 2 (Sankey storage)
                             pv_node_id = node_pv(index=1)
                             grid_node_id = node_elec_grid()
                             load_node_id = node_elec_load()
                             batt_node_id = node_battery(index=1)
-                    
+
                             nodes = [
                                 {"id": pv_node_id, "label": "PV", "group": "prod_elec"},
-                                {"id": grid_node_id, "label": "Réseau élec.", "group": "reseau"},
-                                {"id": batt_node_id, "label": "Batterie", "group": "storage_elec"},
-                                {"id": load_node_id, "label": "Usages élec.", "group": "demande"},
+                                {"id": grid_node_id, "label": "Elecrtic grid", "group": "reseau"},
+                                {"id": batt_node_id, "label": "Battery", "group": "storage_elec"},
+                                {"id": load_node_id, "label": "Electrical needs", "group": "demande"},
                             ]
-                    
+
                             links = []
                             if pv_to_batt_kWh > 0:
                                 links.append({"source": pv_node_id, "target": batt_node_id, "value": pv_to_batt_kWh})
@@ -989,12 +1048,12 @@ def run_calculations(
                                 links.append({"source": batt_node_id, "target": load_node_id, "value": batt_to_load_kWh})
                             if batt_to_grid_kWh > 0:
                                 links.append({"source": batt_node_id, "target": grid_node_id, "value": batt_to_grid_kWh})
-                    
+
                             if losses_kWh > 1e-6:
                                 loss_node_id = f"ELEC_STORAGE_LOSSES_BAT{bat_id}_OUV{oi}"
-                                nodes.append({"id": loss_node_id, "label": "Pertes batterie", "group": "losses"})
+                                nodes.append({"id": loss_node_id, "label": "Battery losses", "group": "losses"})
                                 links.append({"source": batt_node_id, "target": loss_node_id, "value": float(losses_kWh)})
-                    
+
                             # --- Timeseries store (debug)
                             ts_payload = None
                             if store_ts:
@@ -1003,11 +1062,15 @@ def run_calculations(
                                     "grid_to_batt_kWh": grid_to_batt.values.tolist(),
                                     "batt_to_load_kWh": batt_to_load.values.tolist(),
                                     "batt_to_grid_kWh": batt_to_grid.values.tolist(),
-                                    "soc_kWh": (ts_soc.values.tolist() if ts_soc is not None else None),
+                                    # SOC stocké en kWh uniquement (cohérent avec le reste du pipeline)
+                                    "soc_kWh": (ts_soc_kwh.values.tolist() if ts_soc_kwh is not None else None),
+                                    # optionnel: garder la série brute pour debug (si tu veux)
+                                    # "soc_raw": (ts_soc_raw.values.tolist() if ts_soc_raw is not None else None),
+                                    # "soc_unit": soc_unit,
                                 }
 
                             sb = {
-                                "name": f"Stockage (mesuré) – {bat_nom} / {ouv_nom}",
+                                "name": f"Storage (measured) – {bat_nom} / {ouv_nom}",
                                 "type": "storage_elec",
                                 "meta": {
                                     "mode": "measured",
@@ -1023,6 +1086,7 @@ def run_calculations(
                                     "charge_col_map": charge_map,
                                     "discharge_col_map": discharge_map,
                                     "soc_col": col_soc,
+                                    "soc_unit": soc_unit,
                                 },
                                 "nodes": nodes,
                                 "links": links,
@@ -1032,8 +1096,9 @@ def run_calculations(
                                     "batt_to_load_kWh": batt_to_load_kWh,
                                     "batt_to_grid_kWh": batt_to_grid_kWh,
                                     "losses_kWh": losses_kWh,
-                                    "soc_start": soc_start,
-                                    "soc_end": soc_end,
+                                    # SOC start/end en kWh (si convertible)
+                                    "soc_start_kWh": soc_start,
+                                    "soc_end_kWh": soc_end,
                                 },
                                 "impacts": {
                                     "delta_grid_import_kWh": float(delta_imp),
@@ -1041,7 +1106,7 @@ def run_calculations(
                                     "delta_self_consumption_kWh": float(delta_sc),
                                 },
                             }
-                    
+
                             if store_ts and ts_payload is not None:
                                 try:
                                     ts_bucket = results["timeseries_store"]["batiments"][str(bat_id)]["ouvrages"][f"{oi}"]
@@ -1049,24 +1114,36 @@ def run_calculations(
                                 except Exception:
                                     pass
 
+
                         # =========================================
                         # Économie batterie (cashflow) — uniquement stockage électrique
                         # =========================================
                         try:
-                            if (sto.get("type_general") == "Electrique") and (sb.get("type") == "storage_elec"):
-                                tech_params = sto.get("parametres") or {}
-
-                                # --- Capex (valeur + unité)
-                                capex_item = tech_params.get("Capex")
-                                if not isinstance(capex_item, dict) or capex_item.get("valeur") in (None, "", 0):
-                                    raise ValueError("Batterie: 'Capex' manquant dans techno (Excel).")
+                            if (sto.get("type_general") == "Electric") and (sb.get("type") == "storage_elec"):
+                                # Phase 1 stores techno params under "parametres" (FR key).
+                                # Keep backward compatibility if some projects still use "Parameters".
+                                tech_params = sto.get("Parameters") or sto.get("parametres") or {}
                                 
-                                capex_val = float(capex_item["valeur"])
-                                capex_unit = (capex_item.get("unite") or "").strip().lower()
+                                # --- Capex (valeur + unité)
+                                capex_item = tech_params.get("CAPEX")
+                                
+                                # tolerate minor key formatting issues (e.g., "Capex", "CAPEX " in Excel)
+                                if capex_item is None:
+                                    for k, v in tech_params.items():
+                                        if isinstance(k, str) and k.strip().lower() == "capex":
+                                            capex_item = v
+                                            break
+                                
+                                if not isinstance(capex_item, dict) or capex_item.get("Values") in (None, "", 0):
+                                    raise ValueError("Battery: 'CAPEX' missing in technology parameters (Excel).")
+
+                                
+                                capex_val = float(capex_item["Values"])
+                                capex_unit = (capex_item.get("Units") or "").strip().lower()
                                 
                                 cap_kwh = sto.get("capacity_kwh")
                                 if cap_kwh in (None, "", 0):
-                                    raise ValueError("Batterie: capacity_kwh manquant — nécessaire pour calculer CAPEX total.")
+                                    raise ValueError("Battery: capacity_kwh missing — required to compute total CAPEX.")
                                 cap_kwh = float(cap_kwh)
                                 
                                 # Conversion CAPEX -> total
@@ -1075,24 +1152,25 @@ def run_calculations(
                                 elif capex_unit in ("chf", "chf total", "chf/an") or capex_unit == "chf":  # tolérant
                                     capex_total_chf = capex_val
                                 else:
-                                    raise ValueError(f"Batterie: unité Capex non supportée: '{capex_item.get('unite')}'. Attendu CHF/kWh ou CHF.")
-
-                        
+                                    raise ValueError(
+                                        f"Battery: unsupported CAPEX unit: '{capex_item.get('Units')}'. Expected CHF/kWh or CHF."
+                                    )
+                      
                                 opex_annual_chf = _get_param_numeric(
                                     tech_params,
-                                    ["Opex"],
+                                    ["OPEX"],
                                     default=None
                                 )
                                 if opex_annual_chf is None:
-                                    raise ValueError("Batterie: OPEX annuel manquant dans techno (Excel).")
+                                    raise ValueError("Battery: annual OPEX missing in technology parameters (Excel).")
                         
                                 lifetime_years = _get_param_numeric(
                                     tech_params,
-                                    ["Durée de vie", "Lifetime", "lifetime_years", "Vie utile", "Durée de vie (ans)"],
+                                    ["Durée de vie", "Lifetime", "lifetime_years", "Vie utile", "Durée de vie (ans)", "Lifetime"],
                                     default=None
                                 )
                                 if lifetime_years in (None, "", 0):
-                                    raise ValueError("Batterie: durée de vie manquante dans techno (Excel).")
+                                    raise ValueError("Battery: lifetime missing in technology parameters (Excel).")
                         
                                 # TODO: méthode pour calculer le cost factor (pour demain on force 1.0)
                                 replacement_cost_factor = 1.0  # TODO: définir une méthode (dégradation/indice/prix)
@@ -1141,8 +1219,8 @@ def run_calculations(
                             ts_bucket = results["timeseries_store"]["batiments"][str(bat_id)]["ouvrages"][f"{oi}"]
                             ts_bucket["pv_to_batt_kWh"] = pv_to_batt.values.tolist()
                             ts_bucket["batt_to_load_kWh"] = batt_to_load.values.tolist()
-                            if ts_soc is not None:
-                                ts_bucket["soc_kWh"] = ts_soc.values.tolist()
+                            if ts_soc_kwh is not None:
+                                ts_bucket["soc_kWh"] = ts_soc_kwh.values.tolist()
                         except Exception:
                             pass
 
@@ -1380,17 +1458,17 @@ def run_calculations(
 
             nodes_global = [
                 {"id": pv_node_id,   "label": "PV", "group": "prod_elec"},
-                {"id": grid_node_id, "label": "Réseau élec.", "group": "reseau"},
+                {"id": grid_node_id, "label": "Electric grid", "group": "reseau"},
                 {
                     "id": load_node_id,
-                    "label": "Consommation élec. bâtiment",
+                    "label": "Electrical building demand",
                     "group": "demande",
                 },
             ]
             links_global: List[Dict[str, Any]] = []
             if (sto_pv_to_batt > 0) or (sto_grid_to_batt > 0) or (sto_batt_to_load > 0) or (sto_batt_to_grid > 0):
                 batt_node_id = node_battery(index=1)
-                nodes_global.append({"id": batt_node_id, "label": "Batterie", "group": "storage_elec"})
+                nodes_global.append({"id": batt_node_id, "label": "Battery", "group": "storage_elec"})
             
                 if sto_pv_to_batt > 0:
                     links_global.append({"source": pv_node_id, "target": batt_node_id, "value": sto_pv_to_batt})
@@ -1434,39 +1512,39 @@ def run_calculations(
                     }
                 )
 
-            # --- Liens thermiques (si on a une demande) ---
-            if local_demand_th_kwh > 0:
-                heat_src_id = node_heat_prod("UNKNOWN", index=1)
-                heat_load_id = node_heat_load()
+            # # --- Liens thermiques (si on a une demande) ---
+            # if local_demand_th_kwh > 0:
+            #     heat_src_id = node_heat_prod("UNKNOWN", index=1)
+            #     heat_load_id = node_heat_load()
 
-                nodes_global.extend(
-                    [
-                        {
-                            "id": heat_src_id,
-                            "label": "Système de chauffage thermique",
-                            "group": "prod_th",
-                        },
-                        {
-                            "id": heat_load_id,
-                            "label": "Consommation thermique",
-                            "group": "demande",
-                        },
-                    ]
-                )
-                links_global.append(
-                    {
-                        "source": heat_src_id,
-                        "target": heat_load_id,
-                        "value": local_demand_th_kwh,
-                    }
-                )
+            #     nodes_global.extend(
+            #         [
+            #             {
+            #                 "id": heat_src_id,
+            #                 "label": "Thermal production",
+            #                 "group": "prod_th",
+            #             },
+            #             {
+            #                 "id": heat_load_id,
+            #                 "label": "Thermal demand",
+            #                 "group": "demande",
+            #             },
+            #         ]
+            #     )
+            #     links_global.append(
+            #         {
+            #             "source": heat_src_id,
+            #             "target": heat_load_id,
+            #             "value": local_demand_th_kwh,
+            #         }
+            #     )
 
-            # --- Nœud de demande finale ELECTRIQUE uniquement ---
+            # --- Nœud de demande finale Electric uniquement ---
             final_demand_id = "ELEC_FINAL_DEMAND"
             nodes_global.append(
                 {
                     "id": final_demand_id,
-                    "label": "Demande électrique",
+                    "label": "Electrical demand",
                     "group": "final",
                 }
             )
@@ -1498,7 +1576,7 @@ def run_calculations(
                 links_global.append({"source": source_id, "target": loss_id, "value": v})
             
             # --------------------------
-            # A) PERTES ELECTRIQUES
+            # A) PERTES ElectricS
             # --------------------------
             
             # 1) Pertes batterie (si batterie présente)
@@ -1507,7 +1585,7 @@ def run_calculations(
                 _add_loss_link(
                     source_id=batt_node_id,
                     loss_id=loss_elec_id,
-                    loss_label="Pertes / non affecté – électricité",
+                    loss_label="Electrical losses / unassigned",
                     value=sto_losses,
                 )
             
@@ -1517,7 +1595,7 @@ def run_calculations(
             _add_loss_link(
                 source_id=pv_node_id,
                 loss_id=loss_elec_id,
-                loss_label="Pertes / non affecté – électricité",
+                loss_label="Electrical losses / unassigned",
                 value=pv_unmapped,
                 )   
             # --------------------------
@@ -1538,7 +1616,7 @@ def run_calculations(
                 _add_loss_link(
                     source_id=heat_src_id,
                     loss_id=loss_th_id,
-                    loss_label="Pertes / non affecté – thermique",
+                    loss_label="Thermal losses / unassigned",
                     value=th_unmapped,
                 )
 
@@ -1547,7 +1625,7 @@ def run_calculations(
             elec_balance_residual = elec_to_load - float(local_demand_elec_kwh or 0.0)
             
             flow_block_bilan_global = {
-                "name": f"Bilan énergétique – {bat_nom} / {ouv_nom}",
+                "name": f"Energy balance – {bat_nom} / {ouv_nom}",
                 "type": "energy_global",
                 "meta": {
                     "batiment_id": bat_id,
@@ -1616,6 +1694,98 @@ def run_calculations(
     results["summaries"]["pv_inj_kWh_total"] = total_inj
     results["summaries"]["demand_elec_kWh_total"] = total_demand_elec
     results["summaries"]["demand_th_kWh_total"] = total_demand_th
+    
+    # ------------------------------------------------------------------
+    # THERMAL MVP: Oil boiler (configured in Phase 1)
+    #   - Computes thermal supply from measured thermal demand
+    #   - Adds thermal flow_block for Sankey (thermal domain)
+    #   - Stores JSON-friendly timeseries under timeseries_by_batiment[*]["thermal_proposed"]
+    #   - Updates demand_th flow_block to represent *residual* thermal supply
+    # ------------------------------------------------------------------
+    results.setdefault("thermal_by_batiment", {})
+    
+    for bi, bat in enumerate(batiments):
+        bat_id = bat.get("id") or bat.get("batiment_id") or bi
+        bat_nom = bat.get("nom") or f"Bâtiment {bi+1}"
+    
+        # Demand series (may come from multiple ouvrages)
+        th_list = ts_th_by_bat.get(bat_id, []) or ts_th_by_bat.get(bi, []) or []
+        if not th_list:
+            continue
+    
+        # MVP: first oil boiler configured on this building
+        boiler_prod = None
+        for ouv in (project.get("ouvrages") or []):
+            if ouv.get("batiment_id") != bat_id:
+                continue
+            for prod in (ouv.get("producteurs") or []):
+                if (prod.get("engine") or "") == "boiler_oil":
+                    boiler_prod = prod
+                    break
+            if boiler_prod is not None:
+                break
+        if boiler_prod is None:
+            continue
+    
+        # Align and sum demand to a common index
+        idx_list = [s.index for s in th_list]
+        common_index = common_sim_window_intersection(idx_list)
+        if common_index is None or len(common_index) == 0:
+            raise ValueError(f"Thermal MVP: empty common time index for {bat_nom} (bat_id={bat_id}).")
+        demand_th_ts = sum(align_energy_series_to_index(s, common_index) for s in th_list)
+    
+        installed_kw = float(boiler_prod.get("puissance_kw") or 0.0)
+        tech_params = boiler_prod.get("parametres") or {}
+    
+        th_res = compute_oil_boiler_from_demand_ts(
+            demand_th_kwh_ts=demand_th_ts,
+            installed_power_kw=installed_kw,
+            tech_params=tech_params,
+            batiment_id=bat_id,
+            batiment_nom=bat_nom,
+            label=str(boiler_prod.get("techno") or "Oil boiler"),
+            producer_index=1,
+        )
+    
+        results["thermal_by_batiment"][bat_id] = {
+            "batiment_id": bat_id,
+            "batiment_nom": bat_nom,
+            "engine": "boiler_oil",
+            "techno": boiler_prod.get("techno") or "Oil boiler",
+            "installed_power_kW": installed_kw,
+            "totals": th_res.get("totals") or {},
+        }
+    
+        # Add Sankey thermal block (supply)
+        bat_flows = results["flows"]["batiments"].setdefault(bat_id, [])
+        fb = th_res.get("flow_block")
+        if fb is not None:
+            bat_flows.append(fb)
+    
+        # Store JSON-friendly timeseries
+        results.setdefault("timeseries_by_batiment", {})
+        ts_b = results["timeseries_by_batiment"].setdefault(str(bat_id), {})
+        ts_b.setdefault("thermal_proposed", {})
+        ts_b["thermal_proposed"]["index"] = [str(x) for x in common_index]
+        ts_b["thermal_proposed"].setdefault("after", {})
+        ts_b["thermal_proposed"]["after"].update(th_res.get("profiles") or {})
+    
+        # Update residual thermal demand flow_block (HEAT_GRID -> HEAT_LOAD)
+        residual = float((demand_th_ts.sum() - float((th_res.get("totals") or {}).get("heat_out_th_kWh", 0.0) or 0.0)))
+        residual = max(residual, 0.0)
+        for b in bat_flows:
+            if b.get("type") != "demand_th":
+                continue
+            meta = b.get("meta") or {}
+            if str(meta.get("batiment_id")) != str(bat_id):
+                continue
+            links = b.get("links") or []
+            if len(links) == 1:
+                links[0]["value"] = residual
+            b.setdefault("totals", {})
+            b["totals"]["residual_th_kWh"] = residual
+            break
+
 
 
     # ------------------------------------------------------------------
@@ -1632,20 +1802,33 @@ def run_calculations(
     # PV PROPOSÉ (toiture) – par bâtiment  (clé = batiment_id)
     # ==========================================================
     pv_defaults = _get_default_pv_tech_params()
+        # ----------------------------------------------------------
+    # PV techno CO2 factor (kgCO2e/kWh PV) — from PV Excel techno
+    # ----------------------------------------------------------
+    pv_co2_factor_kg_per_kWh = _get_param_numeric(
+        pv_defaults,
+        ["CO2 emissions", "CO₂ emissions", "CO2 Emissions", "CO₂ Emissions"],
+        default=0.0,
+    )
+    if pv_co2_factor_kg_per_kWh <= 0:
+        pv_co2_factor_kg_per_kWh = None
+
     station_name = (project.get("meta") or {}).get("station_meteo") or (project.get("meta") or {}).get("station_name")
     
     # Paramètres module (venant de ton Excel techno)
-    p_module_kw = _get_param_numeric(pv_defaults, ["Puissance du module", "Puissance module (kW)", "Puissance min", "P_module (kW)", "p_module_kw"])
-    area_module_m2 = _get_param_numeric(pv_defaults, ["Surface du module", "Surface du module (m2)", "Surface module (m2)", "area_module_m2"])
-    eta_mod_pct = _get_param_numeric(pv_defaults, ["Rendement", "Rendement (%)", "eta_mod_pct"]) or 100.0
+    p_module_kw = _get_param_numeric(pv_defaults, ["Module power"])
+    area_module_m2 = _get_param_numeric(pv_defaults, [ "Module area"])
+    eta_mod_pct = _get_param_numeric(pv_defaults, ["Efficiency"]) or 100.0
     
     # Interdit: fallback silencieux sur techno PV
     if not p_module_kw or not area_module_m2:
         raise ValueError(
-            "PV proposé: techno PV incomplète (Excel). "
-            "Paramètres requis manquants: 'Puissance du module' (p_module_kw) et/ou 'Surface du module' (area_module_m2). "
-            "Corriger la techno PV dans l'Excel (sheet techno PV) et relancer."
+            "Proposed PV: incomplete PV technology (Excel). "
+            "Missing required parameters: 'Module power' (p_module_kw) and/or "
+            "'Module area' (area_module_m2). "
+            "Please correct the PV technology in the Excel file (PV technology sheet) and rerun the calculation."
         )
+
     
     panel_eff = float(eta_mod_pct or 100.0)
     
@@ -1676,7 +1859,7 @@ def run_calculations(
                 if (prod.get("engine") == "pv") or ("photovolta" in str(prod.get("techno") or "").lower()):
                     total += float(prod.get("puissance_kw") or 0.0)
         if total <= 0:
-            raise ValueError(f"Batterie proposée: aucune puissance PV trouvée pour batiment_id={bat_id}.")
+            raise ValueError(f"Proposed battery: no PV power found for building_id={bat_id}.")
         return total
     
     
@@ -1693,14 +1876,14 @@ def run_calculations(
         pv_list = ts_pv_by_bat.get(bat_id, []) or ts_pv_by_bat.get(bi, []) or []
     
         if not load_list:
-            raise ValueError(f"Batterie proposée: série load manquante pour {bat_nom} (bat_id={bat_id}).")
+            raise ValueError(f"Proposed battery: missing load timeseries for {bat_nom} (bat_id={bat_id}).")
         if not pv_list:
-            raise ValueError(f"Batterie proposée: série PV manquante pour {bat_nom} (bat_id={bat_id}).")
+            raise ValueError(f"Proposed battery: missing PV timeseries for {bat_nom} (bat_id={bat_id}).")
     
         idx_list = [s.index for s in load_list] + [s.index for s in pv_list]
         common_index = common_sim_window_intersection(idx_list)
         if common_index is None or len(common_index) == 0:
-            raise ValueError(f"Batterie proposée: index commun vide pour {bat_nom}.")
+            raise ValueError(f"Proposed battery: empty common time index for {bat_nom}.")
     
         load_ts = sum(align_energy_series_to_index(s, common_index) for s in load_list)
         pv_ts = sum(align_energy_series_to_index(s, common_index) for s in pv_list)
@@ -1710,53 +1893,176 @@ def run_calculations(
         # ----------------------------------------------------------
         sizing = (batt_cfg.get("sizing") or {})
         techc = (batt_cfg.get("tech_constraints") or {})
-    
-        hours_target = float(sizing.get("hours_target") or 0.0)
-        if hours_target <= 0:
-            raise ValueError(f"Batterie proposée: hours_target manquant/<=0 ({bat_nom}).")
-    
+        
+        method = (sizing.get("method") or "").strip().lower()
+        
+        selected_techno = (batt_cfg.get("techno") or "").strip()
+        is_evolium = (selected_techno.lower() == "battery evolium")
+        
+        fixed_capacity_kwh = techc.get("fixed_capacity_kwh", None)
+        if is_evolium:
+            if method != "manual":
+                raise ValueError(f"Evolium (proposed battery): sizing method must be 'manual' ({bat_nom}).")
+            if fixed_capacity_kwh in (None, "", 0):
+                raise ValueError(f"Evolium (proposed battery): fixed_capacity_kwh missing in tech_constraints ({bat_nom}).")
+            fixed_capacity_kwh = float(fixed_capacity_kwh)
+            if fixed_capacity_kwh <= 0:
+                raise ValueError(f"Evolium (proposed battery): fixed_capacity_kwh invalid ({bat_nom}).")
+        
+        
+                if method not in ("heuristic", "manual"):
+                    raise ValueError(f"Proposed battery: invalid sizing method : '{method}' ({bat_nom}).")
+        
         soc_min_frac = float(sizing.get("soc_min_frac") if sizing.get("soc_min_frac") is not None else 0.0)
         soc_max_frac = float(sizing.get("soc_max_frac") if sizing.get("soc_max_frac") is not None else 0.0)
         soc_window = soc_max_frac - soc_min_frac
         if soc_window <= 0:
-            raise ValueError(f"Batterie proposée: fenêtre SOC invalide ({bat_nom}).")
-    
+            raise ValueError(f"Proposed battery: invalid SOC window ({bat_nom}).")
+
+        
         e_min = techc.get("capacity_min_kwh")
         e_max = techc.get("capacity_max_kwh")
         c_rate_ch = techc.get("c_rate_charge_kw_per_kwh")
         c_rate_dis = techc.get("c_rate_discharge_kw_per_kwh")
         eta_global_raw = techc.get("eta_global")
-    
+        
         if e_min is None or e_max is None:
-            raise ValueError(f"Batterie proposée: capacity_min_kwh/capacity_max_kwh manquants ({bat_nom}).")
+            raise ValueError(f"Proposed battery: missing capacity_min_kwh/capacity_max_kwh ({bat_nom}).")
         if c_rate_ch is None or c_rate_dis is None:
-            raise ValueError(f"Batterie proposée: C-rate manquant ({bat_nom}).")
-    
+            raise ValueError(f"Proposed battery: missing C-rate ({bat_nom}).")
+        
         e_min = float(e_min); e_max = float(e_max)
         c_rate_ch = float(c_rate_ch); c_rate_dis = float(c_rate_dis)
         if c_rate_ch <= 0 or c_rate_dis <= 0:
-            raise ValueError(f"Batterie proposée: C-rate <=0 ({bat_nom}).")
-    
+            raise ValueError(f"Proposed battery: C-rate must be > 0 ({bat_nom}).")
+       
         # conversion rendement (90 -> 0.9) dans les calculs
         eta_global = _normalize_efficiency(float(eta_global_raw))
-    
+        
         # ----------------------------------------------------------
-        # Dimensionnement heuristique (validé)
+        # Dimensionnement (heuristique OU manuel)
         # ----------------------------------------------------------
         p_target_kw = _sum_pv_installed_kw_for_bat(bat_id)
-    
-        cap_energy = (p_target_kw * hours_target) / soc_window
-        cap_power = max(p_target_kw / c_rate_ch, p_target_kw / c_rate_dis)
-        cap_total = max(cap_energy, cap_power)
-    
-        pack = _pack_capacities(cap_total, e_min=e_min, e_max=e_max)
-        cap_final = float(sum(pack))
+        
+        # ----------------------------------------------------------
+        # CO2 params for proposed battery (init safe for all paths)
+        # ----------------------------------------------------------
+        batt_lifetime_years = float(techc.get("lifetime_years") or 0.0)
+        
+        # Prefer the canonical key
+        batt_embodied_factor = techc.get("embodied_factor_kg_per_kWhcap", None)
+        
+        # Legacy compatibility (explicit)
+        if batt_embodied_factor is None:
+            batt_embodied_factor = techc.get("co2_kg_per_kwhcap", None)
+        
+        batt_embodied_factor = float(batt_embodied_factor or 0.0)
+        
+        # Defaults (will be recomputed after cap_final is known)
+        batt_embodied_kg = 0.0
+        batt_embodied_annualized_kg = 0.0
+
+        
+        if method == "heuristic":
+            hours_target = float(sizing.get("hours_target") or 0.0)
+            if hours_target <= 0:
+                raise ValueError(f"Proposed battery: hours_target missing or <= 0 ({bat_nom}).")
+        
+            cap_energy = (p_target_kw * hours_target) / soc_window
+            cap_power = max(p_target_kw / c_rate_ch, p_target_kw / c_rate_dis)
+            cap_total = max(cap_energy, cap_power)
+        
+            if is_evolium:
+                cap_total = float(fixed_capacity_kwh)
+                pack = [float(fixed_capacity_kwh)]   # 1 seule batterie imposée
+            else:
+                pack = _pack_capacities(cap_total, e_min=e_min, e_max=e_max)
+            
+            cap_final = float(sum(pack))
+
+            # ----------------------------------------------------------
+            # CO2 params for proposed battery (from Phase 1 / Excel techno)
+            # ----------------------------------------------------------
+            batt_lifetime_years = float(techc.get("lifetime_years") or 0.0)
+            batt_embodied_factor = float(techc.get("embodied_factor_kg_per_kWhcap") or 0.0)
+            
+            batt_embodied_kg = float(cap_final) * batt_embodied_factor if (cap_final and batt_embodied_factor) else 0.0
+            batt_embodied_annualized_kg = (
+                (batt_embodied_kg / batt_lifetime_years)
+                if (batt_embodied_kg > 0 and batt_lifetime_years > 0)
+                else 0.0
+            )
+
+
+            sizing_debug = {
+                "method": "heuristic",
+                "p_target_kw": p_target_kw,
+                "hours_target": hours_target,
+                "soc_window": soc_window,
+                "cap_energy_kwh": cap_energy,
+                "cap_power_kwh": cap_power,
+                "cap_total_kwh": cap_total,
+                "pack_capacities_kwh": pack,
+                "cap_final_kwh": cap_final,
+                "eta_global_input": float(eta_global_raw),
+                "eta_global_norm": eta_global,
+            }
+        
+        else:
+            # Manuel : capacité totale imposée par Phase 1
+            hours_target = None
+            cap_total = float(sizing.get("capacity_total_kwh") or 0.0)
+            if cap_total <= 0:
+                raise ValueError(
+                    f"Proposed battery: capacity_total_kwh missing or <= 0 in manual mode ({bat_nom})."
+                )
+
+        
+            pack = _pack_capacities(cap_total, e_min=e_min, e_max=e_max)
+            cap_final = float(sum(pack))
+            # --- CO2 / embodied (same as heuristic branch) ---
+            batt_lifetime_years = float(techc.get("lifetime_years") or 0.0)
+            # ----------------------------------------------------------
+            # CO2 embodied (computed once cap_final is known)
+            # ----------------------------------------------------------
+            if cap_final and batt_embodied_factor:
+                batt_embodied_kg = float(cap_final) * float(batt_embodied_factor)
+            else:
+                batt_embodied_kg = 0.0
+            
+            if batt_embodied_kg > 0 and batt_lifetime_years > 0:
+                batt_embodied_annualized_kg = float(batt_embodied_kg) / float(batt_lifetime_years)
+            else:
+                batt_embodied_annualized_kg = 0.0
+
+            
+            batt_embodied_kg = float(cap_final) * batt_embodied_factor
+            batt_embodied_annualized_kg = 0.0
+            if batt_lifetime_years and batt_lifetime_years > 0:
+                batt_embodied_annualized_kg = batt_embodied_kg / batt_lifetime_years
+
+        
+            sizing_debug = {
+                "method": "manual",
+                "p_target_kw": p_target_kw,              # utile pour affichage/repère
+                "hours_target": None,
+                "soc_window": soc_window,
+                "cap_total_kwh": cap_total,
+                "pack_capacities_kwh": pack,
+                "cap_final_kwh": cap_final,
+                "eta_global_input": float(eta_global_raw),
+                "eta_global_norm": eta_global,
+                "is_evolium": bool(is_evolium),
+                "fixed_capacity_kwh": (float(fixed_capacity_kwh) if is_evolium else None),
+
+            }
+
     
         # ----------------------------------------------------------
         # Construire un storage_cfg compatible bat_li_ion_module
         # ----------------------------------------------------------
         sto_cfg = {
-            "type_general": "Electrique",
+            "type_general": "Electric",
             "engine": "bat_li_ion",
             "techno": batt_cfg.get("techno") or "Battery (proposed)",
             "data_mode": "simulated",
@@ -1771,23 +2077,14 @@ def run_calculations(
     
             "parametres": {
                 # la fonction bat module lit "Rendement" -> on met déjà en fraction
-                "Rendement": {"valeur": eta_global, "unite": "-"},
-                "C-rate charge max.": {"valeur": c_rate_ch, "unite": "kW/kWh"},
-                "C-rate décharge max.": {"valeur": c_rate_dis, "unite": "kW/kWh"},
+                "Rendement": {"Values": eta_global, "Units": "-"},
+                "C-rate charge max.": {"Values": c_rate_ch, "Units": "kW/kWh"},
+                "C-rate décharge max.": {"Values": c_rate_dis, "Units": "kW/kWh"},
             },
     
-            "_sizing_debug": {
-                "p_target_kw": p_target_kw,
-                "hours_target": hours_target,
-                "soc_window": soc_window,
-                "cap_energy_kwh": cap_energy,
-                "cap_power_kwh": cap_power,
-                "cap_total_kwh": cap_total,
-                "pack_capacities_kwh": pack,
-                "cap_final_kwh": cap_final,
-                "eta_global_input": float(eta_global_raw),
-                "eta_global_norm": eta_global,
-            },
+            "_sizing_debug": sizing_debug,
+
+
         }
     
         # ----------------------------------------------------------
@@ -1896,6 +2193,10 @@ def run_calculations(
             "p_target_kw": p_target_kw,
             "hours_target": hours_target,
             "eta_global": eta_global,
+            "batt_lifetime_years": batt_lifetime_years,
+            "batt_embodied_factor_kg_per_kWhcap": batt_embodied_factor,
+            "batt_embodied_kgCO2e": batt_embodied_kg,
+            "batt_embodied_annualized_kgCO2e": batt_embodied_annualized_kg,
             "totals_before": {
                 "demand_kwh": float(load_ts.sum()),
                 "pv_prod_kwh": float(pv_ts.sum()),
@@ -1959,11 +2260,15 @@ def run_calculations(
         
             ts_b.setdefault("after", {})
             ts_b["after"].update({
+                # PV-only: le PV->Load direct ne change pas avec la batterie (le surplus PV charge la batterie)
+                "pv_to_load_kWh": pv_to_load_base_ts.values.tolist(),
+            
                 "pv_to_batt_kWh": _ensure_len(pv_to_batt_list),
                 "batt_to_load_kWh": _ensure_len(batt_to_load_list),
                 "soc_kWh": _ensure_len(soc_list),
                 "losses_kWh": _ensure_len(losses_list),
             })
+
         
         except Exception:
             # si ton module ne renvoie pas les séries, on ne plante pas ici
@@ -1981,11 +2286,12 @@ def run_calculations(
         lifetime_years = techc.get("lifetime_years")
     
         if capex_spec is None:
-            raise ValueError(f"Batterie proposée: capex_chf_per_kwh manquant ({bat_nom}).")
+            raise ValueError(f"Proposed battery: capex_chf_per_kwh missing ({bat_nom}).")
         if opex_annual is None:
-            raise ValueError(f"Batterie proposée: opex_chf_per_year manquant ({bat_nom}).")
+            raise ValueError(f"Proposed battery: opex_chf_per_year missing ({bat_nom}).")
         if lifetime_years is None or float(lifetime_years) <= 0:
-            raise ValueError(f"Batterie proposée: lifetime_years manquant/invalide ({bat_nom}).")
+            raise ValueError(f"Proposed battery: lifetime_years missing or invalid ({bat_nom}).")
+
     
         capex_total = float(capex_spec) * float(cap_final)
         replacement_cost_factor = 1.0  # TODO dégradation/learning
@@ -2122,10 +2428,11 @@ def run_calculations(
             selfc_pct = float(pv_prop_cfg["default_selfc_pct"])
         else:
             raise ValueError(
-                "PV proposé: autoconsommation manquante. "
-                "Attendu: bat.pv_proposed_config.default_selfc_pct "
-                "(configuré dans Phase 1 > Bâtiments / Ouvrages)."
+                "Proposed PV: self-consumption setting missing. "
+                "Expected: bat.pv_proposed_config.default_selfc_pct "
+                "(configured in Phase 1 > Buildings / Units)."
             )
+
         
         selfc_pct = min(max(selfc_pct, 0.0), 1.0)
 
@@ -2140,9 +2447,10 @@ def run_calculations(
         )
         if pv_lifetime_years <= 0:
             raise ValueError(
-                "PV proposé: durée de vie manquante dans la techno PV (Excel). "
-                "Attendu une clé type 'lifetime_years' / 'Durée de vie'."
+                "Proposed PV: lifetime missing in PV technology parameters (Excel). "
+                "Expected a key such as 'lifetime_years' or 'Durée de vie'."
             )
+
         
         # PV replacement cost factor (TEMP)
         # TODO: remplacer ce 1.0 par un paramètre techno/éco (CAPEX replacement vs initial, onduleur séparé, inflation, learning rate, etc.)
@@ -2284,8 +2592,37 @@ def run_calculations(
             "selfc_kwh": selfc_kwh,
             "inj_kwh": inj_kwh,
             "economics": econ,
+            "pv_factor_kg_per_kWh": pv_co2_factor_kg_per_kWh,
         }
-    
+        
+        # ==========================================================
+        # PV PROPOSED — "after" annual energy totals (source of truth)
+        # Needed by CO2 / variants KPI (Phase 2 must not recompute)
+        # ==========================================================
+        demand_elec_kWh = 0.0
+        try:
+            fb_list = ((results.get("flows") or {}).get("batiments") or {}).get(bat_id) \
+                      or ((results.get("flows") or {}).get("batiments") or {}).get(str(bat_id)) \
+                      or []
+            for fb in fb_list:
+                if isinstance(fb, dict) and fb.get("type") == "energy_global":
+                    demand_elec_kWh = float(((fb.get("totals") or {}).get("demand_elec_kWh")) or 0.0)
+                    break
+        except Exception:
+            demand_elec_kWh = 0.0
+        
+        pv_to_load_kWh = float(min(float(selfc_kwh or 0.0), demand_elec_kWh))
+        grid_to_load_kWh = float(max(demand_elec_kWh - pv_to_load_kWh, 0.0))
+        pv_to_grid_kWh = float(max(float(inj_kwh or 0.0), 0.0))
+        
+        results["pv_proposed_by_batiment"][bat_id]["totals_after"] = {
+            "grid_to_load_kwh": grid_to_load_kWh,
+            "pv_to_load_kwh": pv_to_load_kWh,
+            "pv_to_grid_kwh": pv_to_grid_kWh,
+            "batt_to_load_kwh": 0.0,
+            "pv_prod_kwh": float(annual_kwh or 0.0),
+        }
+
     # Expose au projet (pour Phase 2 / show_variantes)
     project["pv_simulated"] = results.get("pv_proposed_by_batiment", {})
     
@@ -2356,6 +2693,11 @@ def run_calculations(
     
     # Exposé au projet (Phase 2)
     results["summaries"]["battery_impact_by_batiment"] = battery_impact_by_batiment
+    results["co2"] = compute_co2_results(project, results)
+    # Exergy (heating-only MVP)
+    results["exergy"] = compute_exergy_results(project, results)
+    # SIA/CECB-like envelope label (thermal) — baseline measured only
+    results["sia"] = compute_sia_results(project, results)
 
 
     return results

@@ -29,15 +29,15 @@ def _num(x, default=0.0) -> float:
 
 def _get_param(params: Dict[str, Any], key: str, default=None):
     """
-    params is expected like: { "Capacité min": {"valeur": ..., "unite": ...}, ... }
-    Returns params[key]["valeur"] if present else default.
+    params is expected like: { "Capacité min": {"Values": ..., "unite": ...}, ... }
+    Returns params[key]["Values"] if present else default.
     """
     if not params:
         return default
     item = params.get(key)
     if not item:
         return default
-    return item.get("valeur", default)
+    return item.get("Values", default)
 
 
 def _find_block(flow_blocks: List[Dict[str, Any]], block_type: str) -> Optional[Dict[str, Any]]:
@@ -108,11 +108,41 @@ def compute_battery_li_ion_flow_block(
     C = _num(storage_cfg.get("capacity_kwh"), 0.0)
     if C <= 0:
         return {"type": "storage_elec", "totals": {"error": "capacity_kwh <= 0"}, "profiles": {}}
+    
+    # --- SOC window (no hardcode): priority to explicit cfg, else techno params
+    soc_min_frac = storage_cfg.get("soc_min_frac", None)
+    soc_max_frac = storage_cfg.get("soc_max_frac", None)
+    
+    if soc_min_frac is None or soc_max_frac is None:
+        # depuis Excel techno (parametres), typiquement en %
+        soc_min_raw = _get_param(params, "SOC min", None)
+        soc_max_raw = _get_param(params, "SOC max", None)
+    
+        if soc_min_raw is None or soc_max_raw is None:
+            raise ValueError("Batterie: SoC min/max manquants (ni dans storage_cfg, ni dans techno).")
+    
+        soc_min_frac = _num(soc_min_raw, None)
+        soc_max_frac = _num(soc_max_raw, None)
+    
+        # normalisation % -> fraction
+        if soc_min_frac is None or soc_max_frac is None:
+            raise ValueError("Batterie: SoC min/max non numériques.")
+    
+        if soc_min_frac > 1.0: soc_min_frac = soc_min_frac / 100.0
+        if soc_max_frac > 1.0: soc_max_frac = soc_max_frac / 100.0
+    
+    soc_min_frac = float(soc_min_frac)
+    soc_max_frac = float(soc_max_frac)
+    
+    if not (0.0 <= soc_min_frac <= 1.0) or not (0.0 <= soc_max_frac <= 1.0):
+        raise ValueError(f"Batterie: SoC min/max hors bornes: min={soc_min_frac}, max={soc_max_frac}")
+    if soc_min_frac >= soc_max_frac:
+        raise ValueError(f"Batterie: SoC min doit être < SoC max: min={soc_min_frac}, max={soc_max_frac}")
 
-    soc_min = 0.2 * C
-    soc_max = 0.8 * C
+    soc_min = soc_min_frac * C
+    soc_max = soc_max_frac * C
 
-    eta = _num(_get_param(params, "Rendement", 1.0), 1.0)
+    eta = _num(_get_param(params, "Efficiency", 1.0), 1.0)
     # If rendement is given in %, accept 25 -> 0.25
     if eta > 1.0:
         eta = eta / 100.0
@@ -121,8 +151,8 @@ def compute_battery_li_ion_flow_block(
     eta_dis = math.sqrt(eta) if eta > 0 else 1.0
 
     ## C-rate style parameters: kW/kWh (ex 0.5)
-    pch_spec = _num(_get_param(params, "C-rate charge max.", None), None)
-    pdis_spec = _num(_get_param(params, "C-rate décharge max.", None), None)
+    pch_spec = _num(_get_param(params, "Max charge C-rate", None), None)
+    pdis_spec = _num(_get_param(params, "Max discharge C-rate", None), None)
     
     # Backward-compatible aliases (si tu renommes plus tard)
     if pch_spec is None:
@@ -235,7 +265,7 @@ def compute_battery_li_ion_flow_block(
     # CAPEX spécifique batterie: CHF/kWh
     capex_spec = None
     for k in [
-        "Capex (CHF/kWh)", "CAPEX (CHF/kWh)", "Capex spécifique (CHF/kWh)",
+        "Capex (CHF/kWh)", "CAPEX (CHF/kWh)", "Capex spécifique (CHF/kWh)", "CAPEX"
         "CAPEX spécifique (CHF/kWh)", "Capex spécifique", "CAPEX spécifique",
     ]:
         v = _get_param(params, k, None)
@@ -245,7 +275,7 @@ def compute_battery_li_ion_flow_block(
     
     # OPEX: soit en % du CAPEX, soit CHF/an
     opex_pct = None
-    for k in ["Opex (%)", "OPEX (%)", "Opex annuel (%)", "OPEX annuel (%)"]:
+    for k in ["Opex (%)", "OPEX (%)", "Opex annuel (%)", "OPEX annuel (%)", "OPEX"]:
         v = _get_param(params, k, None)
         if v is not None:
             opex_pct = _num(v, None)
@@ -357,7 +387,7 @@ def compute_battery_li_ion_flow_block_timeseries(
 
     if not load_kwh.index.equals(pv_kwh.index):
         # on refuse ici : le ré-alignment est fait dans calculations.py (patch 2/3)
-        raise ValueError("compute_battery_li_ion_flow_block_timeseries: load_kwh et pv_kwh doivent avoir le même index")
+        raise ValueError("compute_battery_li_ion_flow_block_timeseries: load_kwh and pv_kwh must have the same index")
 
     params = storage_cfg.get("parametres") or {}
     mapping = storage_cfg.get("mapping") or {}
@@ -369,11 +399,40 @@ def compute_battery_li_ion_flow_block_timeseries(
     if C <= 0:
         return {"type": "storage_elec", "totals": {"error": "capacity_kwh <= 0"}, "profiles": {}}
 
-    soc_min_frac = float(storage_cfg.get("soc_min_frac", 0.20) or 0.20)
-    soc_max_frac = float(storage_cfg.get("soc_max_frac", 0.80) or 0.80)
+    # --- SOC window (no hardcode): priority to explicit cfg, else techno params
+    soc_min_frac = storage_cfg.get("soc_min_frac", None)
+    soc_max_frac = storage_cfg.get("soc_max_frac", None)
+    
+    if soc_min_frac is None or soc_max_frac is None:
+        # depuis Excel techno (parametres), typiquement en %
+        soc_min_raw = _get_param(params, "SOC min", None)
+        soc_max_raw = _get_param(params, "SOC max", None)
+    
+        if soc_min_raw is None or soc_max_raw is None:
+            raise ValueError("Battery: missing SoC min/max (neither in storage_cfg nor in technology parameters).")
+
+    
+        soc_min_frac = _num(soc_min_raw, None)
+        soc_max_frac = _num(soc_max_raw, None)
+    
+        # normalisation % -> fraction
+        if soc_min_frac is None or soc_max_frac is None:
+            raise ValueError("Battery: SoC min/max are not numeric.")
+    
+        if soc_min_frac > 1.0: soc_min_frac = soc_min_frac / 100.0
+        if soc_max_frac > 1.0: soc_max_frac = soc_max_frac / 100.0
+    
+    soc_min_frac = float(soc_min_frac)
+    soc_max_frac = float(soc_max_frac)
+    
+    if not (0.0 <= soc_min_frac <= 1.0) or not (0.0 <= soc_max_frac <= 1.0):
+        raise ValueError(f"Battery: SoC min/max out of bounds: min={soc_min_frac}, max={soc_max_frac}")
+    if soc_min_frac >= soc_max_frac:
+        raise ValueError(f"Battery: SoC min must be < SoC max: min={soc_min_frac}, max={soc_max_frac}")
+
 
     # Rendement global (souvent en %) dans ton Excel techno
-    eta = _num(_get_param(params, "Rendement", 0.90), 0.90)
+    eta = _num(_get_param(params, "Efficiency", 0.90), 0.90)
     if eta > 1.0:
         eta = eta / 100.0
     eta = max(min(float(eta), 1.0), 0.0)
@@ -382,8 +441,8 @@ def compute_battery_li_ion_flow_block_timeseries(
     eta_dis = math.sqrt(eta) if eta > 0 else 1.0
 
     # Puissances max via C-rate * capacité (kW/kWh * kWh = kW)
-    c_ch = _num(_get_param(params, "C-rate charge max.", 0.5), 0.5)
-    c_dis = _num(_get_param(params, "C-rate décharge max.", 0.5), 0.5)
+    c_ch = _num(_get_param(params, "Max charge C-rate", 0.5), 0.5)
+    c_dis = _num(_get_param(params, "Max discharge C-rate", 0.5), 0.5)
     p_ch_max_kw = max(float(c_ch) * C, 0.0)
     p_dis_max_kw = max(float(c_dis) * C, 0.0)
 
@@ -476,15 +535,15 @@ def compute_battery_li_ion_flow_block_timeseries(
     
     nodes = [
         {"id": pv_id, "label": "PV", "group": "prod_elec"},
-        {"id": grid_id, "label": "Réseau élec.", "group": "reseau"},
-        {"id": batt_id, "label": "Batterie", "group": "storage_elec"},
-        {"id": load_id, "label": "Consommation élec. bâtiment", "group": "demande"},
+        {"id": grid_id, "label": "Electric grid", "group": "reseau"},
+        {"id": batt_id, "label": "Battery", "group": "storage_elec"},
+        {"id": load_id, "label": "Building electricity consumption", "group": "demande"},
     ]
     # --- node pertes batterie (si > 0)
     loss_id = None
     if losses > 1e-6:
         loss_id = "ELEC_STORAGE_LOSSES"
-        nodes.append({"id": loss_id, "label": "Pertes batterie", "group": "losses"})
+        nodes.append({"id": loss_id, "label": "Battery losses", "group": "losses"})
 
     links = []
     if pv_to_batt > 0:
@@ -528,7 +587,7 @@ def compute_battery_li_ion_flow_block_timeseries(
     if batt_unmapped > 1e-6:
         loss_id = "ELEC_STORAGE_LOSSES"
         if not any(n.get("id") == loss_id for n in nodes):
-            nodes.append({"id": loss_id, "label": "Pertes / non affecté", "group": "losses"})
+            nodes.append({"id": loss_id, "label": "Electrical losses / unassigned", "group": "losses"})
         links.append({"source": batt_id, "target": loss_id, "value": float(batt_unmapped)})
         
     if loss_id is not None:

@@ -35,7 +35,7 @@ def get_param_numeric(
             continue
 
         if isinstance(raw, dict):
-            val = raw.get("valeur", None)
+            val = raw.get("Values", None)
         else:
             val = raw
 
@@ -69,17 +69,17 @@ def _apply_replacements_to_cashflows(
         return cashflows
 
     if lifetime_years <= 0:
-        raise ValueError("lifetime_years doit être > 0 pour appliquer des remplacements.")
+        raise ValueError("lifetime_years must be > 0 to apply replacement costs.")
 
     if horizon_years <= 0:
         return cashflows
 
     if replacement_cost_factor <= 0:
-        raise ValueError("replacement_cost_factor doit être > 0 pour appliquer des remplacements.")
+        raise ValueError("replacement_cost_factor must be > 0 to apply replacement costs.")
 
     step = int(round(float(lifetime_years)))
     if step <= 0:
-        raise ValueError(f"Durée de vie invalide (arrondie): lifetime_years={lifetime_years}")
+        raise ValueError(f"Invalid lifetime after rounding: lifetime_years={lifetime_years}")
 
     replacement_cost = float(capex_total_chf) * float(replacement_cost_factor)
 
@@ -121,7 +121,8 @@ def compute_tech_economics(
             "CAPEX (CHF/kW)",
             "Investissement spécifique (CHF/kW)",
             "Capex spécifique (CHF/kW)",
-            "Capex",  # ⚠️ chez toi: 1800 CHF/kW
+            "Capex",
+            "CAPEX" # ⚠️ chez toi: 1800 CHF/kW
         ],
         default=0.0,
     )
@@ -149,7 +150,8 @@ def compute_tech_economics(
         [
             "Opex (CHF/an)", "Opex [CHF/an]", "OPEX (CHF/an)",
             "Coûts fixes (CHF/an)",
-            "Opex",  # ⚠️ ton Excel
+            "Opex",
+            "OPEX" # ⚠️ ton Excel
         ],
         default=0.0,
     )
@@ -184,7 +186,7 @@ def compute_tech_economics(
         tech_params,
         [
             "Durée de vie (ans)", "Durée de vie [ans]",
-            "Lifetime (a)", "Durée de vie",  # ⚠️ ton Excel
+            "Lifetime (a)", "Durée de vie", "Lifetime" # ⚠️ ton Excel
         ],
         default=default_lifetime_years,
     )
@@ -278,17 +280,17 @@ def compute_battery_cashflow_series(
 
     # --- checks
     if horizon_years <= 0:
-        raise ValueError("horizon_years doit être > 0")
+        raise ValueError("horizon_years must be > 0")
     if capex_total_chf < 0:
-        raise ValueError("capex_total_chf doit être >= 0")
+        raise ValueError("capex_total_chf must be >= 0")
     if opex_annual_chf < 0:
-        raise ValueError("opex_annual_chf doit être >= 0")
+        raise ValueError("opex_annual_chf must be >= 0")
     if price_buy_chf_kwh <= 0:
-        raise ValueError("price_buy_chf_kwh doit être > 0")
+        raise ValueError("price_buy_chf_kwh must be > 0")
     if price_sell_chf_kwh < 0:
-        raise ValueError("price_sell_chf_kwh doit être >= 0")
+        raise ValueError("price_sell_chf_kwh must be >= 0")
     if lifetime_years <= 0:
-        raise ValueError("lifetime_years doit être > 0")
+        raise ValueError("lifetime_years must be > 0")
 
     # --- année 0 = CAPEX
     cashflows = [0.0] * (horizon_years + 1)
@@ -326,6 +328,7 @@ def compute_battery_cashflow_series(
             payback_year = y
 
     out = {
+        "capex_total_chf" : capex_total_chf,
         "years": list(range(0, horizon_years + 1)),
         "cashflow_CHF": cashflows,
         "cashflow_cum_CHF": cashflow_cum,
@@ -337,7 +340,8 @@ def compute_battery_cashflow_series(
             "annual_cost_grid_charge_CHF": cost_grid_charge,
             "annual_opex_CHF": float(opex_annual_chf),
             "annual_net_CHF": float(annual_net),
-            "note": "MVP: pas de coût d'opportunité PV->batt. À raffiner plus tard.",
+            "note": "MVP: no opportunity cost considered for PV → battery flows. To be refined later.",
+
         },
     }
     return out

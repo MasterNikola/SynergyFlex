@@ -56,6 +56,10 @@ HEAT_LOAD = "HEAT_LOAD"
 HEAT_GRID = "HEAT_GRID"
 HEAT_LOSS = "HEAT_LOSS"
 
+# ---- FUELS / INPUT ENERGY (thermal MVP) ----
+# Keep thermal Sankey traceable without overloading HEAT_GRID.
+FUEL_OIL = "FUEL_OIL"
+
 def node_heat_load() -> str:
     return HEAT_LOAD
 
@@ -64,6 +68,10 @@ def node_heat_grid() -> str:
 
 def node_heat_loss() -> str:
     return HEAT_LOSS
+
+def node_fuel_oil() -> str:
+    """Fuel input node for oil-fired systems (kWh_fuel)."""
+    return FUEL_OIL
 
 def node_heat_prod(tech: str = "UNKNOWN", index: int = 1) -> str:
     """
